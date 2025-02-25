@@ -20,12 +20,12 @@ k = [2.537 3.463 2.971 2.963 2.385];  % Weibull shape parameter - download from 
 c = [8.29 9.01 9.38 10.39 9.19];  % Weibull scale parameter - download from https://globalwindatlas.info/en/
 
 % Solar modeling parameters 
-Spv = [];   % Solar cell area (m^2)
-Pf = [];    % Packing factor
-epv = [];   % Module reference efficiency
-epc = [];   % Power conditioning efficiency 
-phi = [];   % Parameter of Beta distribution
-theta = []; % Parameter of Beta distribution
+Spv = [500 500 500 500 500]; % Solar cell area (m^2) (500 - 800 m^2)
+Pf = [0.4 0.4 0.4 0.4 0.4];  % Packing factor (30 - 50%)
+epv = [0.18 0.18 0.18 0.18]; % Module reference efficiency (10 - 23% depending on the type of panel)
+epc = [1 1 1 1 1];           % Power conditioning efficiency (need to figure this out, just put 1 for now)
+phi = [];                    % Parameter of Beta distribution
+theta = [];                  % Parameter of Beta distribution
 
 % Control parameters
 Nc = 24; % Control horizon (hours)
