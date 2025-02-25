@@ -1,7 +1,10 @@
 %% Process weather data
+% Downloaded from https://nsrdb.nrel.gov/data-viewer, Meteostat Prime
+% Meridian Europe + Africa dataset, GHI and windspeed, 2005 - 2022, 
+% 60 minute intervals 
 
 years = [2005:2022];
-windspeeds = cell(12, 1);
+windspeeds = cell(12, 24);
 irradiance = cell(12, 24);
 
 for year = years
@@ -9,25 +12,26 @@ for year = years
     for i = 1:height(data)
         month = table2array(data(i,2));
         hour = table2array(data(i,4)) + 1;
-        windspeeds{month} = [windspeeds{month}; table2array(data(i, 7));];
+        windspeeds{month, hour} = [windspeeds{month, hour}; table2array(data(i, 7));];
         irradiance{month, hour} = [irradiance{month, hour}; table2array(data(i, 6));];
     end
 end
 
 %% Fit the data to probability distributions and save to .mat file
 
-weibull_params_a = cell(12, 1);
-weibull_params_b = cell(12, 1);
+weibull_params_a = cell(12, 24);
+weibull_params_b = cell(12, 24);
 beta_params_a = cell(12, 24);
 beta_params_b = cell(12, 24);
 beta_params_scaling = cell(12,24);
 
 for month = 1:12
-    data_wind = windspeeds{month};
-    weibull_params = fitdist(data_wind, 'Weibull');
-    weibull_params_a{month} = weibull_params.a;
-    weibull_params_b{month} = weibull_params.b;
     for hour = 1:24
+        data_wind = windspeeds{month, hour};
+        weibull_params = fitdist(data_wind, 'Weibull');
+        weibull_params_a{month, hour} = weibull_params.a;
+        weibull_params_b{month, hour} = weibull_params.b;
+
         data_irradiance = irradiance{month, hour};
         beta_params_scaling{month, hour} = max(data_irradiance);
         % 0 solar irradiance in the middle of the night
@@ -42,7 +46,7 @@ for month = 1:12
     end
 end
 
-% Save to files for later use
+%% Save to files for later use
 weibull_filename = 'rotterdam_weather_data/weibull_params.mat';
 save(weibull_filename, 'weibull_params_a', 'weibull_params_b');
 beta_filename = 'rotterdam_weather_data/beta_params.mat';
@@ -51,18 +55,18 @@ save(beta_filename, 'beta_params_a', 'beta_params_b');
 
 %% Plotting wind speed and irradiance levels for given month/hour, along with fitted distribution
 
-month = 10;
-hour = 13;
+month = 8;
+hour = 14;
 bins = 50;
 
-data_wind = windspeeds{month};
+data_wind = windspeeds{month, hour};
 x_values = [0:0.1:max(data_wind)+5];
-y_values = wblpdf(x_values, weibull_params_a{month}, weibull_params_b{month});
+y_values = wblpdf(x_values, weibull_params_a{month, hour}, weibull_params_b{month, hour});
 bin_width = (max(data_wind) - min(data_wind)) / bins;  % Calculate the bin width
 y_values = y_values.*length(data_wind)*bin_width;
 
 figure (1);
-histogram(windspeeds{month}, bins);
+histogram(windspeeds{month, hour}, bins);
 hold on 
 plot(x_values, y_values)
 title('Histogram of Wind Speed');
