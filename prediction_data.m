@@ -13,7 +13,7 @@ for year = years
         month = table2array(data(i,2));
         hour = table2array(data(i,4)) + 1;
         windspeeds{month, hour} = [windspeeds{month, hour}; table2array(data(i, 7));];
-        irradiance{month, hour} = [irradiance{month, hour}; table2array(data(i, 6));];
+        irradiance{month, hour} = [irradiance{month, hour}; table2array(data(i, 6))/1000;];
     end
 end
 
@@ -55,8 +55,8 @@ save(beta_filename, 'beta_params_a', 'beta_params_b', "beta_params_scaling");
 
 %% Plotting wind speed and irradiance levels for given month/hour, along with fitted distribution
 
-month = 5;
-hour = 10;
+month = 7;
+hour = 12;
 bins = 20;
 
 data_wind = windspeeds{month, hour};

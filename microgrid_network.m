@@ -15,15 +15,15 @@ B_dis = [];  % Discharging efficiency
 
 
 %% Some sample code to test it out
-month = 12;
+month = 5;
 expected_wind_power = zeros(M,24,1);
 expected_solar_power = zeros(M,24,1);
 
-mg1 = define_microgrid(51.93, 4.5, 500, 3, 12, 25, 100, 0.4, 0.18, 0.6, 1, 1, 1, 1);
-mg2 = define_microgrid(51.93, 4.5, 400, 3, 12, 25, 200, 0.4, 0.18, 0.6, 1, 1, 1, 1);
-mg3 = define_microgrid(51.93, 4.5, 300, 3, 12, 25, 300, 0.4, 0.18, 0.6, 1, 1, 1, 1);
-mg4 = define_microgrid(51.93, 4.5, 200, 3, 12, 25, 400, 0.4, 0.18, 0.6, 1, 1, 1, 1);
-mg5 = define_microgrid(51.93, 4.5, 100, 3, 12, 25, 500, 0.4, 0.18, 0.6, 1, 1, 1, 1);
+mg1 = define_microgrid(51.93, 4.5, 500, 3, 12, 25, 500, 0.8, 0.2, 0.8, 1, 1, 1, 1);
+mg2 = define_microgrid(51.93, 4.5, 400, 3, 12, 25, 600, 0.8, 0.2, 0.8, 1, 1, 1, 1);
+mg3 = define_microgrid(51.93, 4.5, 300, 3, 12, 25, 700, 0.8, 0.2, 0.8, 1, 1, 1, 1);
+mg4 = define_microgrid(51.93, 4.5, 200, 3, 12, 25, 800, 0.8, 0.2, 0.8, 1, 1, 1, 1);
+mg5 = define_microgrid(51.93, 4.5, 100, 3, 12, 25, 900, 0.8, 0.2, 0.8, 1, 1, 1, 1);
 
 mgs = [mg1, mg2, mg3, mg4, mg5];
 
