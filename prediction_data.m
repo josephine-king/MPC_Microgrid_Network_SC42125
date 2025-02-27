@@ -8,7 +8,7 @@ windspeeds = cell(12, 24);
 irradiance = cell(12, 24);
 
 for year = years
-    data = readtable("rotterdam_weather_data/rotterdam_" + string(year) + ".csv");
+    data = readtable("51.93_4.5/rotterdam_" + string(year) + ".csv");
     for i = 1:height(data)
         month = table2array(data(i,2));
         hour = table2array(data(i,4)) + 1;
@@ -47,17 +47,17 @@ for month = 1:12
 end
 
 %% Save to files for later use
-weibull_filename = 'rotterdam_weather_data/weibull_params.mat';
+weibull_filename = '51.93_4.5/weibull_params.mat';
 save(weibull_filename, 'weibull_params_a', 'weibull_params_b');
-beta_filename = 'rotterdam_weather_data/beta_params.mat';
-save(beta_filename, 'beta_params_a', 'beta_params_b');
+beta_filename = '51.93_4.5/beta_params.mat';
+save(beta_filename, 'beta_params_a', 'beta_params_b', "beta_params_scaling");
 
 
 %% Plotting wind speed and irradiance levels for given month/hour, along with fitted distribution
 
-month = 8;
-hour = 14;
-bins = 50;
+month = 5;
+hour = 10;
+bins = 20;
 
 data_wind = windspeeds{month, hour};
 x_values = [0:0.1:max(data_wind)+5];
@@ -74,7 +74,7 @@ xlabel('Wind Speed (m/s)');
 ylabel('Frequency');
 
 data_irradiance = irradiance{month, hour};
-x_values = [0:0.001:1];
+x_values = [0.001:0.001:.999];
 y_values = betapdf(x_values, beta_params_a{month, hour}, beta_params_b{month, hour});
 x_values = x_values.*beta_params_scaling{month, hour};
 bin_width = (max(data_irradiance) - min(data_irradiance)) / bins; 
