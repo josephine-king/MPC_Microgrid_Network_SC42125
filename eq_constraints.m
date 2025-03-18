@@ -1,5 +1,5 @@
 % Equality constraints
-function ceq = eq_constraints(X, U, data, Nc, M, beta_c, beta_d, wt, pv, D)
+function ceq = eq_constraints(X, U, data, Nc, M, beta_c, beta_d, cap, wt, pv, D)
 
     ceq = [];
     % Loop over all the time indices in the horizon

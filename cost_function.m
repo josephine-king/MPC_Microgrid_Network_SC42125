@@ -1,6 +1,6 @@
 % Cost function
 % Minimize the power bought from the DNO
-function J = cost_function(X, U, e, data, Nc, M, beta_c, beta_d, wt, pv, D)
+function J = cost_function(X, U, e, data, Nc, M, beta_c, beta_d, cap, wt, pv, D)
     J = 0;
     for k = 1:Nc
         for m = 1:M

@@ -19,34 +19,74 @@ controller.ControlHorizon = Nc;
 controller.Model.StateFcn = 'state_function';
 controller.Model.OutputFcn = 'output_function';
 controller.Model.IsContinuousTime = false;
-controller.Model.NumberOfParameters = 7;
+controller.Model.NumberOfParameters = 8;
 controller.Optimization.CustomCostFcn = 'cost_function';
 controller.Optimization.CustomEqConFcn = 'eq_constraints';
 controller.Optimization.CustomIneqConFcn = 'ineq_constraints';
 
 %% Use MPC Controller
-num_time_steps = 5;
+num_time_steps = 24;
 options = nlmpcmoveopt;
-data = struct();
-wt = [50, 50, 50];
-pv = [50, 50, 50];
-D = [100, 100, 100];
-options.Parameters = {Nc, M, beta_c, beta_d, wt, pv, D};
 
 % Initialize microgrids
-mg1 = define_microgrid(51.93, 4.5, 500, 3, 12, 25, 500, 0.8, 0.2, 0.8, 1000);
-mg2 = define_microgrid(51.93, 4.5, 400, 3, 12, 25, 600, 0.8, 0.2, 0.8, 700);
+mg1 = define_microgrid(51.93, 4.5, 500, 3, 12, 25, 500, 0.8, 0.2, 0.8, 600);
+mg2 = define_microgrid(51.93, 4.5, 400, 3, 12, 25, 600, 0.8, 0.2, 0.8, 550);
 mg3 = define_microgrid(51.93, 4.5, 300, 3, 12, 25, 700, 0.8, 0.2, 0.8, 300);
+cap = [mg1.cap; mg2.cap; mg3.cap];
+
+% Load energy and demand data
+[wt, pv] = get_energy_data([mg1, mg2, mg3], 5, 1, 24);
+D = wt(:,1) + pv(:,1) + 30;
 
 % Initial state
-x = [200 200 200];
-last_mv = zeros(m,1);
+x = zeros(n, num_time_steps+1);
+u = zeros(m, num_time_steps+1);
+x(:,1) = cap/2;
+u(:,1) = zeros(m,1);
+u(2) = 30;
+u(10) = 30;
+u(18) = 30;
 
 for k = 1:num_time_steps
-    mv = nlmpcmove(controller, x, last_mv, [], [], options);
-    x = state_function(x, mv, Nc, M, beta_c, beta_d);
-    last_mv = mv;
+    options.Parameters = {Nc, M, beta_c, beta_d, cap, wt(:,k), pv(:,k), D};
+    u(:,k+1) = nlmpcmove(controller, x(:,k), u(:,k), [], [], options);
+    x(:,k+1) = reshape(state_function(x(:,k), u(:,k+1), Nc, M, beta_c, beta_d, wt, pv, D), n, 1);
 end
+
+%% Plotting
+figure(1)
+plot(x(1,:))
+hold on
+plot(x(2,:))
+hold on
+plot(x(3,:))
+legend(["MG1", "MG2", "MG3"])
+title("Energy stored")
+ylabel("Energy stored (kWh)")
+xlabel("Time step (hour)")
+ylim([0,max(cap)])
+
+figure(2)
+plot(u(3,:))
+hold on
+plot(u(11,:))
+hold on
+plot(u(19,:))
+legend(["MG1", "MG2", "MG3"])
+title("Power sold to DNO")
+ylabel("Power sold (kW)")
+xlabel("Time step (hour)")
+
+figure(3)
+plot(u(6,:))
+hold on
+plot(u(14,:))
+hold on
+plot(u(22,:))
+legend(["MG1", "MG2", "MG3"])
+title("Power purchased from DNO")
+ylabel("Power purchased (kW)")
+xlabel("Time step (hour)")
 
 %% Testing and plotting energy modeling code
 
@@ -57,39 +97,46 @@ expected_solar_power = zeros(M,24,1);
 mg1 = define_microgrid(51.93, 4.5, 500, 3, 12, 25, 500, 0.8, 0.2, 0.8, 1000);
 mg2 = define_microgrid(51.93, 4.5, 400, 3, 12, 25, 600, 0.8, 0.2, 0.8, 700);
 mg3 = define_microgrid(51.93, 4.5, 300, 3, 12, 25, 700, 0.8, 0.2, 0.8, 300);
-
 mgs = [mg1, mg2, mg3];
 
-for mg_idx = 1:M
-    for hour = 1:24
-        mg = mgs(mg_idx);
+[expected_wind_power, expected_solar_power] = get_energy_data(mgs, month, 1, 24);
 
-        [beta_params, weibull_params] = load_params([mg.latitude],[mg.longitude]);
-        weibull_params_mg = get_weibull_params(weibull_params, [mg.latitude], [mg.longitude], month, hour);
-        beta_params_mg = get_beta_params(beta_params, [mg.latitude], [mg.longitude], month, hour);
-        
-        v = linspace(0, 60, 1000);
-        wbl_pdf = wblpdf(v, weibull_params_mg(1), weibull_params_mg(2));
-        i = linspace(0.001, beta_params_mg(3), 1000);
+function [wt, pv] = get_energy_data(mgs, month, start_hour, num_hours)
     
-        if (beta_params_mg(3) == 0)
-            beta_pdf = zeros(1, 1000);
-        else
-            beta_pdf = betapdf(i, beta_params_mg(1), beta_params_mg(2));
-            beta_pdf = beta_pdf*beta_params_mg(3);
+    wt = zeros(length(mgs), num_hours);
+    pv = zeros(length(mgs), num_hours);
+    for m = 1:length(mgs)
+        mg = mgs(m);
+
+        for hour = start_hour:start_hour+num_hours-1
+    
+            [beta_params, weibull_params] = load_params([mg.latitude],[mg.longitude]);
+            weibull_params_mg = get_weibull_params(weibull_params, [mg.latitude], [mg.longitude], month, hour);
+            beta_params_mg = get_beta_params(beta_params, [mg.latitude], [mg.longitude], month, hour);
+            
+            v = linspace(0, 60, 1000);
+            wbl_pdf = wblpdf(v, weibull_params_mg(1), weibull_params_mg(2));
+            i = linspace(0.001, beta_params_mg(3), 1000);
+        
+            if (beta_params_mg(3) == 0)
+                beta_pdf = zeros(1, 1000);
+            else
+                beta_pdf = betapdf(i, beta_params_mg(1), beta_params_mg(2));
+                beta_pdf = beta_pdf*beta_params_mg(3);
+            end
+        
+            % Wind power function
+            wp = zeros(size(v));
+            wp(v >= mg.vc & v < mg.vr) = mg.Pr * (v(v >= mg.vc & v < mg.vr) - mg.vc) / (mg.vr - mg.vc);
+            wp(v >= mg.vr & v <= mg.vf) = mg.Pr;
+        
+            % Solar power function
+            sp = mg.Pf*mg.Spv*mg.epc*mg.epv.*i;
+            
+            wt(m, hour) = trapz(v, wp .* wbl_pdf);
+            pv(m, hour) = trapz(i, sp .* beta_pdf);
+        
         end
-    
-        % Wind power function
-        wp = zeros(size(v));
-        wp(v >= mg.vc & v < mg.vr) = mg.Pr * (v(v >= mg.vc & v < mg.vr) - mg.vc) / (mg.vr - mg.vc);
-        wp(v >= mg.vr & v <= mg.vf) = mg.Pr;
-    
-        % Solar power function
-        sp = mg.Pf*mg.Spv*mg.epc*mg.epv.*i;
-        
-        expected_wind_power(mg_idx, hour) = trapz(v, wp .* wbl_pdf);
-        expected_solar_power(mg_idx, hour) = trapz(i, sp .* beta_pdf);
-    
     end
 end
 
