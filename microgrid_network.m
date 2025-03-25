@@ -12,6 +12,12 @@ L = ones(M, M) - eye(M, M); % Links between microgrids
 beta_c = 1; % Charging efficiency
 beta_d = 1;  % Discharging efficiency
 
+% Initialize microgrids
+mg1 = define_microgrid(51.93, 4.5, 0, 3, 12, 25, 5000, 0.8, 0.2, 0.8, 1000); % Solar only 
+mg2 = define_microgrid(51.93, 4.5, 800, 3, 12, 25, 0, 0.8, 0.2, 0.8, 1000);  % Wind only 
+mg3 = define_microgrid(51.93, 4.5, 400, 3, 12, 25, 2500, 0.8, 0.2, 0.8, 1000); % Hybrid
+
+%% Use MPC Controller
 % Define MPC Controller
 controller = nlmpc(3, 3, 24);
 controller.PredictionHorizon = Np;
@@ -24,12 +30,6 @@ controller.Optimization.CustomCostFcn = 'cost_function';
 controller.Optimization.CustomEqConFcn = 'eq_constraints';
 controller.Optimization.CustomIneqConFcn = 'ineq_constraints';
 
-% Initialize microgrids
-mg1 = define_microgrid(51.93, 4.5, 0, 3, 12, 25, 5000, 0.8, 0.2, 0.8, 1000); % Solar only 
-mg2 = define_microgrid(51.93, 4.5, 800, 3, 12, 25, 0, 0.8, 0.2, 0.8, 1000);  % Wind only 
-mg3 = define_microgrid(51.93, 4.5, 400, 3, 12, 25, 2500, 0.8, 0.2, 0.8, 1000); % Hybrid
-
-%% Use MPC Controller
 num_time_steps = 24;
 options = nlmpcmoveopt;
 
@@ -58,14 +58,14 @@ for k = 1:num_time_steps
     x(:,k+1) = reshape(state_function(x(:,k), u(:,k+1), Nc, M, beta_c, beta_d, wt_k, pv_k, D_k), n, 1);
 end
 %% Solve using our own optimization loop with CVX
-num_time_steps = 24;
+num_time_steps = 36;
 
 cap = [mg1.cap; mg2.cap; mg3.cap];
 
 % Load energy and demand data
 num_hours = num_time_steps + Np;
 [wt, pv] = get_energy_data([mg1, mg2, mg3], 5, 1, num_hours);
-D = ones(1,num_hours).*100;%(wt(:,1) + pv(:,1));
+D = ones(1,num_hours).*(wt(:,10) + pv(:,10));
 
 % Initial state
 x = zeros(n, num_time_steps+1);
@@ -86,7 +86,7 @@ function first_u = solve_mpc(state, Nc, M, beta_c, beta_d, cap, wt, pv, D)
     n = 3;
     N = 24;
 
-    cvx_begin %quiet
+    cvx_begin quiet
         variable u(m,N);  % Control sequence
         variable x(n,N); % State sequence
         
@@ -105,7 +105,9 @@ function first_u = solve_mpc(state, Nc, M, beta_c, beta_d, cap, wt, pv, D)
             x(:,1) == state;  
             % State update
             for i = 1:N-1
-                x(:,i+1) == x(:,i) + beta_c*u(1 + 8*(m-1)) - beta_d*u(2 + 8*(m-1));
+                for mg = 1:n
+                    x(mg,i+1) == x(:,i) + beta_c*u(1 + 8*(mg-1), i) - beta_d*u(2 + 8*(mg-1), i);
+                end
             end
             for i = 1:N
                 % Energy balance constraints 
