@@ -24,33 +24,116 @@ controller.Optimization.CustomCostFcn = 'cost_function';
 controller.Optimization.CustomEqConFcn = 'eq_constraints';
 controller.Optimization.CustomIneqConFcn = 'ineq_constraints';
 
+% Initialize microgrids
+mg1 = define_microgrid(51.93, 4.5, 0, 3, 12, 25, 5000, 0.8, 0.2, 0.8, 1000); % Solar only 
+mg2 = define_microgrid(51.93, 4.5, 800, 3, 12, 25, 0, 0.8, 0.2, 0.8, 1000);  % Wind only 
+mg3 = define_microgrid(51.93, 4.5, 400, 3, 12, 25, 2500, 0.8, 0.2, 0.8, 1000); % Hybrid
+
 %% Use MPC Controller
 num_time_steps = 24;
 options = nlmpcmoveopt;
 
-% Initialize microgrids
-mg1 = define_microgrid(51.93, 4.5, 500, 3, 12, 25, 500, 0.8, 0.2, 0.8, 600);
-mg2 = define_microgrid(51.93, 4.5, 400, 3, 12, 25, 600, 0.8, 0.2, 0.8, 550);
-mg3 = define_microgrid(51.93, 4.5, 300, 3, 12, 25, 700, 0.8, 0.2, 0.8, 300);
 cap = [mg1.cap; mg2.cap; mg3.cap];
 
 % Load energy and demand data
-[wt, pv] = get_energy_data([mg1, mg2, mg3], 5, 1, 24);
-D = wt(:,1) + pv(:,1) + 30;
+num_hours = num_time_steps + Np;
+[wt, pv] = get_energy_data([mg1, mg2, mg3], 5, 1, num_hours);
+D = ones(1,num_hours).*(wt(:,1) + pv(:,1) + 30);
 
 % Initial state
 x = zeros(n, num_time_steps+1);
 u = zeros(m, num_time_steps+1);
 x(:,1) = cap/2;
 u(:,1) = zeros(m,1);
-u(2) = 30;
-u(10) = 30;
-u(18) = 30;
+%u(2) = 30;
+%u(10) = 30;
+%u(18) = 30;
 
 for k = 1:num_time_steps
-    options.Parameters = {Nc, M, beta_c, beta_d, cap, wt(:,k), pv(:,k), D};
+    wt_k = wt(:, k:k+Np);
+    pv_k = pv(:, k:k+Np);
+    D_k = D(:, k:k+Np);
+    options.Parameters = {Nc, M, beta_c, beta_d, cap, wt_k, pv_k, D_k};
     u(:,k+1) = nlmpcmove(controller, x(:,k), u(:,k), [], [], options);
-    x(:,k+1) = reshape(state_function(x(:,k), u(:,k+1), Nc, M, beta_c, beta_d, wt, pv, D), n, 1);
+    x(:,k+1) = reshape(state_function(x(:,k), u(:,k+1), Nc, M, beta_c, beta_d, wt_k, pv_k, D_k), n, 1);
+end
+%% Solve using our own optimization loop with CVX
+num_time_steps = 24;
+
+cap = [mg1.cap; mg2.cap; mg3.cap];
+
+% Load energy and demand data
+num_hours = num_time_steps + Np;
+[wt, pv] = get_energy_data([mg1, mg2, mg3], 5, 1, num_hours);
+D = ones(1,num_hours).*100;%(wt(:,1) + pv(:,1));
+
+% Initial state
+x = zeros(n, num_time_steps+1);
+u = zeros(m, num_time_steps+1);
+x(:,1) = cap/2;
+u(:,1) = zeros(m,1);
+
+for k = 1:num_time_steps
+    wt_k = wt(:, k:k+Np);
+    pv_k = pv(:, k:k+Np);
+    D_k = D(:, k:k+Np);
+    u(:,k+1) = solve_mpc(x(:,k), Nc, M, beta_c, beta_d, cap, wt_k, pv_k, D_k);
+    x(:,k+1) = reshape(state_function(x(:,k), u(:,k+1), Nc, M, beta_c, beta_d, wt_k, pv_k, D_k), n, 1);
+end
+
+function first_u = solve_mpc(state, Nc, M, beta_c, beta_d, cap, wt, pv, D)
+    m = 24;
+    n = 3;
+    N = 24;
+
+    cvx_begin %quiet
+        variable u(m,N);  % Control sequence
+        variable x(n,N); % State sequence
+        
+        % Define cost function
+        J = 0;
+        for i = 1:N
+            for mg = 1:n
+                J = J + u(6 + 8*(mg-1), i);
+            end
+        end
+        minimize(J)
+        
+        % Constraints
+        subject to
+            % Initial state
+            x(:,1) == state;  
+            % State update
+            for i = 1:N-1
+                x(:,i+1) == x(:,i) + beta_c*u(1 + 8*(m-1)) - beta_d*u(2 + 8*(m-1));
+            end
+            for i = 1:N
+                % Energy balance constraints 
+                u_i = u(:,i);
+                for mg = 1:n
+                    ubal_lhs(mg) = wt(mg,i) + pv(mg,i) - D(mg,i);
+                    energy_sold = sum(u_i(3 + 8*(mg-1) : 5 + 8*(mg-1)));
+                    energy_purchased = sum(u_i(6 + 8*(mg-1) : 8 + 8*(mg-1)));
+                    u_char = u_i(1 + 8*(mg-1));
+                    u_dischar = u_i(2 + 8*(mg-1));
+                    ubal_rhs(mg) = energy_sold - energy_purchased + beta_c*u_char - beta_d*u_dischar;
+                end
+                ubal_lhs - ubal_rhs == 0;
+               
+                % Energy sold from one grid must match energy bought from other grid
+                u_i(4)  - u_i(15) == 0;
+                u_i(5)  - u_i(23) == 0;
+                u_i(13) - u_i(24) == 0;
+                u_i(12) - u_i(7)  == 0;
+                u_i(20) - u_i(8)  == 0;
+                u_i(21) - u_i(16) == 0;
+
+                % Constraints on states and inputs
+                0 <= x(:,i) <= cap;
+                0 <= u_i;
+            end
+    cvx_end
+    first_u = u(:,1);
 end
 
 %% Plotting
@@ -64,9 +147,45 @@ legend(["MG1", "MG2", "MG3"])
 title("Energy stored")
 ylabel("Energy stored (kWh)")
 xlabel("Time step (hour)")
-ylim([0,max(cap)])
+ylim([0,max(cap)+50])
 
 figure(2)
+plot(u(4,:))
+hold on
+plot(u(5,:))
+hold on
+plot(u(12,:))
+hold on
+plot(u(13,:))
+hold on
+plot(u(20,:))
+hold on
+plot(u(21,:))
+hold on
+legend(["MG1 to MG2", "MG1 to MG3", "MG2 to MG1", "MG2 to MG3", "MG3 to MG1", "MG3 to MG2"])
+title("Power sold to MGs")
+ylabel("Power sold (kW)")
+xlabel("Time step (hour)")
+
+figure(3)
+plot(u(7,:))
+hold on
+plot(u(8,:))
+hold on
+plot(u(15,:))
+hold on
+plot(u(16,:))
+hold on
+plot(u(23,:))
+hold on
+plot(u(24,:))
+hold on
+legend(["MG1 to MG2", "MG1 to MG3", "MG2 to MG1", "MG2 to MG3", "MG3 to MG1", "MG3 to MG2"])
+title("Power purchased from MGs")
+ylabel("Power purchased (kW)")
+xlabel("Time step (hour)")
+
+figure(4)
 plot(u(3,:))
 hold on
 plot(u(11,:))
@@ -77,7 +196,7 @@ title("Power sold to DNO")
 ylabel("Power sold (kW)")
 xlabel("Time step (hour)")
 
-figure(3)
+figure(5)
 plot(u(6,:))
 hold on
 plot(u(14,:))
@@ -88,15 +207,23 @@ title("Power purchased from DNO")
 ylabel("Power purchased (kW)")
 xlabel("Time step (hour)")
 
+figure(6)
+plot(D(1,:))
+hold on
+plot(D(2,:))
+hold on
+plot(D(3,:))
+legend(["MG1", "MG2", "MG3"])
+title("Power demand")
+ylabel("Power demand (kW)")
+xlabel("Time step (hour)")
+
 %% Testing and plotting energy modeling code
 
 month = 5;
 expected_wind_power = zeros(M,24,1);
 expected_solar_power = zeros(M,24,1);
 
-mg1 = define_microgrid(51.93, 4.5, 500, 3, 12, 25, 500, 0.8, 0.2, 0.8, 1000);
-mg2 = define_microgrid(51.93, 4.5, 400, 3, 12, 25, 600, 0.8, 0.2, 0.8, 700);
-mg3 = define_microgrid(51.93, 4.5, 300, 3, 12, 25, 700, 0.8, 0.2, 0.8, 300);
 mgs = [mg1, mg2, mg3];
 
 [expected_wind_power, expected_solar_power] = get_energy_data(mgs, month, 1, 24);
@@ -109,10 +236,12 @@ function [wt, pv] = get_energy_data(mgs, month, start_hour, num_hours)
         mg = mgs(m);
 
         for hour = start_hour:start_hour+num_hours-1
+
+            hour_in_day = mod(hour, 24) + 1;
     
             [beta_params, weibull_params] = load_params([mg.latitude],[mg.longitude]);
-            weibull_params_mg = get_weibull_params(weibull_params, [mg.latitude], [mg.longitude], month, hour);
-            beta_params_mg = get_beta_params(beta_params, [mg.latitude], [mg.longitude], month, hour);
+            weibull_params_mg = get_weibull_params(weibull_params, [mg.latitude], [mg.longitude], month, hour_in_day);
+            beta_params_mg = get_beta_params(beta_params, [mg.latitude], [mg.longitude], month, hour_in_day);
             
             v = linspace(0, 60, 1000);
             wbl_pdf = wblpdf(v, weibull_params_mg(1), weibull_params_mg(2));
@@ -133,8 +262,8 @@ function [wt, pv] = get_energy_data(mgs, month, start_hour, num_hours)
             % Solar power function
             sp = mg.Pf*mg.Spv*mg.epc*mg.epv.*i;
             
-            wt(m, hour) = trapz(v, wp .* wbl_pdf);
-            pv(m, hour) = trapz(i, sp .* beta_pdf);
+            wt(m, hour_in_day) = trapz(v, wp .* wbl_pdf);
+            pv(m, hour_in_day) = trapz(i, sp .* beta_pdf);
         
         end
     end
@@ -166,6 +295,13 @@ plot(0:23, cumsum(expected_wind_power,2), "o-")
 xlabel("Hour")
 ylabel("Expected wind power (kW)")
 title("Expected cumulative wind power for one day in month ", month)
+legend(["MG1", "MG2", "MG3", "MG4", "MG5"])
+
+figure(5)
+plot(0:23, cumsum(expected_wind_power,2)+cumsum(expected_solar_power,2), "o-")
+xlabel("Hour")
+ylabel("Expected wind power (kW)")
+title("Expected cumulative power generation one day in month ", month)
 legend(["MG1", "MG2", "MG3", "MG4", "MG5"])
 
 

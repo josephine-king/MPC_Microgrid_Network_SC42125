@@ -12,11 +12,11 @@ function ceq = eq_constraints(X, U, data, Nc, M, beta_c, beta_d, cap, wt, pv, D)
         ubal_lhs = zeros(M,1);
         ubal_rhs = zeros(M,1);
         for m = 1:M
-            ubal_lhs(m) = wt(m) + pv(m) - D(m);
+            ubal_lhs(m) = wt(m,k) + pv(m,k) - D(m,k);
             energy_sold = sum(Uk(3 + 8*(m-1) : 5 + 8*(m-1)));
             energy_purchased = sum(Uk(6 + 8*(m-1) : 8 + 8*(m-1)));
-            u_char = Uk(1);
-            u_dischar = Uk(2);
+            u_char = Uk(1 + 8*(m-1));
+            u_dischar = Uk(2 + 8*(m-1));
             ubal_rhs(m) = energy_sold - energy_purchased + beta_c*u_char - beta_d*u_dischar;
         end 
     
