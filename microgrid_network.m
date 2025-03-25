@@ -58,14 +58,14 @@ for k = 1:num_time_steps
     x(:,k+1) = reshape(state_function(x(:,k), u(:,k+1), Nc, M, beta_c, beta_d, wt_k, pv_k, D_k), n, 1);
 end
 %% Solve using our own optimization loop with CVX
-num_time_steps = 36;
+num_time_steps = 72;
 
 cap = [mg1.cap; mg2.cap; mg3.cap];
 
 % Load energy and demand data
 num_hours = num_time_steps + Np;
 [wt, pv] = get_energy_data([mg1, mg2, mg3], 5, 1, num_hours);
-D = ones(1,num_hours).*(wt(:,10) + pv(:,10));
+D = (wt+pv)*0.5;
 
 % Initial state
 x = zeros(n, num_time_steps+1);
@@ -86,7 +86,7 @@ function first_u = solve_mpc(state, Nc, M, beta_c, beta_d, cap, wt, pv, D)
     n = 3;
     N = 24;
 
-    cvx_begin quiet
+    cvx_begin 
         variable u(m,N);  % Control sequence
         variable x(n,N); % State sequence
         
@@ -94,7 +94,7 @@ function first_u = solve_mpc(state, Nc, M, beta_c, beta_d, cap, wt, pv, D)
         J = 0;
         for i = 1:N
             for mg = 1:n
-                J = J + u(6 + 8*(mg-1), i);
+                J = J + u(6 + 8*(mg-1), i) + u(3 + 8*(mg-1), i);
             end
         end
         minimize(J)
@@ -131,11 +131,12 @@ function first_u = solve_mpc(state, Nc, M, beta_c, beta_d, cap, wt, pv, D)
                 u_i(21) - u_i(16) == 0;
 
                 % Constraints on states and inputs
-                0 <= x(:,i) <= cap;
+                0.2.*cap <= x(:,i) <= 0.8.*cap;
                 0 <= u_i;
             end
     cvx_end
     first_u = u(:,1);
+
 end
 
 %% Plotting
@@ -227,8 +228,8 @@ expected_wind_power = zeros(M,24,1);
 expected_solar_power = zeros(M,24,1);
 
 mgs = [mg1, mg2, mg3];
-
-[expected_wind_power, expected_solar_power] = get_energy_data(mgs, month, 1, 24);
+num_hours = 72;
+[expected_wind_power, expected_solar_power] = get_energy_data(mgs, month, 1, num_hours);
 
 function [wt, pv] = get_energy_data(mgs, month, start_hour, num_hours)
     
@@ -264,43 +265,43 @@ function [wt, pv] = get_energy_data(mgs, month, start_hour, num_hours)
             % Solar power function
             sp = mg.Pf*mg.Spv*mg.epc*mg.epv.*i;
             
-            wt(m, hour_in_day) = trapz(v, wp .* wbl_pdf);
-            pv(m, hour_in_day) = trapz(i, sp .* beta_pdf);
+            wt(m, hour) = trapz(v, wp .* wbl_pdf);
+            pv(m, hour) = trapz(i, sp .* beta_pdf);
         
         end
     end
 end
 
 figure(1)
-plot(0:23, expected_solar_power, "o-")
+plot(0:num_hours-1, expected_solar_power, "o-")
 xlabel("Hour")
 ylabel("Expected solar power (kW)")
 title("Expected hourly solar power generation for one day in month ", month)
 legend(["MG1", "MG2", "MG3", "MG4", "MG5"])
 
 figure(2)
-plot(0:23, cumsum(expected_solar_power,2), "o-")
+plot(0:num_hours-1, cumsum(expected_solar_power,2), "o-")
 xlabel("Hour")
 ylabel("Expected solar power (kW)")
 title("Expected cumulative solar power for one day in month ", month)
 legend(["MG1", "MG2", "MG3", "MG4", "MG5"])
 
 figure(3)
-plot(0:23, expected_wind_power, "o-")
+plot(0:num_hours-1, expected_wind_power, "o-")
 xlabel("Hour")
 ylabel("Expected wind power (kW)")
 title("Expected hourly wind power generation for one day in month ", month)
 legend(["MG1", "MG2", "MG3", "MG4", "MG5"])
 
 figure(4)
-plot(0:23, cumsum(expected_wind_power,2), "o-")
+plot(0:num_hours-1, cumsum(expected_wind_power,2), "o-")
 xlabel("Hour")
 ylabel("Expected wind power (kW)")
 title("Expected cumulative wind power for one day in month ", month)
 legend(["MG1", "MG2", "MG3", "MG4", "MG5"])
 
 figure(5)
-plot(0:23, cumsum(expected_wind_power,2)+cumsum(expected_solar_power,2), "o-")
+plot(0:num_hours-1, cumsum(expected_wind_power,2)+cumsum(expected_solar_power,2), "o-")
 xlabel("Hour")
 ylabel("Expected wind power (kW)")
 title("Expected cumulative power generation one day in month ", month)
