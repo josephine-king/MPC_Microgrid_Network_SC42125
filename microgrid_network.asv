@@ -91,10 +91,10 @@ function first_u = solve_mpc(state, Nc, M, beta_c, beta_d, cap, wt, pv, D)
         variable x(n,N); % State sequence
 
         %Binary variables for hybrid constraints. 
-        variable delta_ms(n,n-1) binary
-        variable delta_mp(n,n-1) binary
-        variable delta_gs(n,1) binary
-        variable delta_gp(n,1) binary 
+        variables delta_ms(n,n-1) binary
+        variables delta_mp(n,n-1) binary
+        variables delta_gs(n,1) binary
+        variables delta_gp(n,1) binary 
         M = 1000;
         
         % Define cost function
@@ -155,17 +155,17 @@ function first_u = solve_mpc(state, Nc, M, beta_c, beta_d, cap, wt, pv, D)
                 ubal_lhs(mg) >= -M * (1 - delta_ms(mg,2));
 
                 % Constraint: u_mp = 0 if ubal_lhs(j) > 0
-                u_i(7 + 8 * (mg - 1)) >= 0;
+                u_i(7 + 8 * (mg- 1)) >= 0;
                 u_i(7 + 8 * (mg - 1)) <= M * delta_mp(mg,1);
                 ubal_lhs(mg) <= M * (1 - delta_mp(mg,1));
 
-                u_i(8 + 8 * (mg - 1)) >= 0;
-                u_i(8 + 8 * (mg - 1)) <= M * delta_mp(mg,2);
+                u_i(8 + 8*(mg-1)) >= 0;
+                u_i(8 + 8*(mg-1)) <= M * delta_mp(mg,2);
                 ubal_lhs(mg) <= M * (1 - delta_mp(mg,2));
 
                 % Constraint: u_gs = 0 if ubal_lhs(i) < 0
-                u(3 + 8 * (mg - 1)) >= 0;
-                u(3 + 8 * (mg - 1)) <= M * delta_gs(mg);
+                u(3 + 8*(mg - 1)) >= 0;
+                u(3 + 8*(mg - 1)) <= M * delta_gs(mg);
                 ubal_lhs(mg) >= -M * (1 - delta_gs(mg));
 
                 % Constraint: u_gp = 0 if ubal_lhs(i) > 0
