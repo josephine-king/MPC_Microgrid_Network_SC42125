@@ -17,46 +17,46 @@ mg1 = define_microgrid(51.93, 4.5, 0, 3, 12, 25, 5000, 0.8, 0.2, 0.8, 1000); % S
 mg2 = define_microgrid(51.93, 4.5, 800, 3, 12, 25, 0, 0.8, 0.2, 0.8, 1000);  % Wind only 
 mg3 = define_microgrid(51.93, 4.5, 400, 3, 12, 25, 2500, 0.8, 0.2, 0.8, 1000); % Hybrid
 
-%% Use MPC Controller
-% Define MPC Controller
-controller = nlmpc(3, 3, 24);
-controller.PredictionHorizon = Np;
-controller.ControlHorizon = Nc;
-controller.Model.StateFcn = 'state_function';
-controller.Model.OutputFcn = 'output_function';
-controller.Model.IsContinuousTime = false;
-controller.Model.NumberOfParameters = 8;
-controller.Optimization.CustomCostFcn = 'cost_function';
-controller.Optimization.CustomEqConFcn = 'eq_constraints';
-controller.Optimization.CustomIneqConFcn = 'ineq_constraints';
-
-num_time_steps = 24;
-options = nlmpcmoveopt;
-
-cap = [mg1.cap; mg2.cap; mg3.cap];
-
-% Load energy and demand data
-num_hours = num_time_steps + Np;
-[wt, pv] = get_energy_data([mg1, mg2, mg3], 5, 1, num_hours);
-D = ones(1,num_hours).*(wt(:,1) + pv(:,1) + 30);
-
-% Initial state
-x = zeros(n, num_time_steps+1);
-u = zeros(m, num_time_steps+1);
-x(:,1) = cap/2;
-u(:,1) = zeros(m,1);
-%u(2) = 30;
-%u(10) = 30;
-%u(18) = 30;
-
-for k = 1:num_time_steps
-    wt_k = wt(:, k:k+Np);
-    pv_k = pv(:, k:k+Np);
-    D_k = D(:, k:k+Np);
-    options.Parameters = {Nc, M, beta_c, beta_d, cap, wt_k, pv_k, D_k};
-    u(:,k+1) = nlmpcmove(controller, x(:,k), u(:,k), [], [], options);
-    x(:,k+1) = reshape(state_function(x(:,k), u(:,k+1), Nc, M, beta_c, beta_d, wt_k, pv_k, D_k), n, 1);
-end
+% %% Use MPC Controller
+% % Define MPC Controller
+% controller = nlmpc(3, 3, 24);
+% controller.PredictionHorizon = Np;
+% controller.ControlHorizon = Nc;
+% controller.Model.StateFcn = 'state_function';
+% controller.Model.OutputFcn = 'output_function';
+% controller.Model.IsContinuousTime = false;
+% controller.Model.NumberOfParameters = 8;
+% controller.Optimization.CustomCostFcn = 'cost_function';
+% controller.Optimization.CustomEqConFcn = 'eq_constraints';
+% controller.Optimization.CustomIneqConFcn = 'ineq_constraints';
+% 
+% num_time_steps = 24;
+% options = nlmpcmoveopt;
+% 
+% cap = [mg1.cap; mg2.cap; mg3.cap];
+% 
+% % Load energy and demand data
+% num_hours = num_time_steps + Np;
+% [wt, pv] = get_energy_data([mg1, mg2, mg3], 5, 1, num_hours);
+% D = ones(1,num_hours).*(wt(:,1) + pv(:,1) + 30);
+% 
+% % Initial state
+% x = zeros(n, num_time_steps+1);
+% u = zeros(m, num_time_steps+1);
+% x(:,1) = cap/2;
+% u(:,1) = zeros(m,1);
+% %u(2) = 30;
+% %u(10) = 30;
+% %u(18) = 30;
+% 
+% for k = 1:num_time_steps
+%     wt_k = wt(:, k:k+Np);
+%     pv_k = pv(:, k:k+Np);
+%     D_k = D(:, k:k+Np);
+%     options.Parameters = {Nc, M, beta_c, beta_d, cap, wt_k, pv_k, D_k};
+%     u(:,k+1) = nlmpcmove(controller, x(:,k), u(:,k), [], [], options);
+%     x(:,k+1) = reshape(state_function(x(:,k), u(:,k+1), Nc, M, beta_c, beta_d, wt_k, pv_k, D_k), n, 1);
+% end
 %% Solve using our own optimization loop with CVX
 num_time_steps = 72;
 
@@ -89,6 +89,8 @@ function first_u = solve_mpc(state, Nc, M, beta_c, beta_d, cap, wt, pv, D)
     cvx_begin 
         variable u(m,N);  % Control sequence
         variable x(n,N); % State sequence
+
+        %variable delta(n,N); % Binary values. 
         
         % Define cost function
         J = 0;
@@ -106,7 +108,7 @@ function first_u = solve_mpc(state, Nc, M, beta_c, beta_d, cap, wt, pv, D)
             % State update
             for i = 1:N-1
                 for mg = 1:n
-                    x(mg,i+1) == x(:,i) + beta_c*u(1 + 8*(mg-1), i) - beta_d*u(2 + 8*(mg-1), i);
+                    x(mg,i+1) == x(mg,i) + beta_c*u(1 + 8*(mg-1), i) - beta_d*u(2 + 8*(mg-1), i);
                 end
             end
             for i = 1:N
@@ -133,6 +135,9 @@ function first_u = solve_mpc(state, Nc, M, beta_c, beta_d, cap, wt, pv, D)
                 % Constraints on states and inputs
                 0.2.*cap <= x(:,i) <= 0.8.*cap;
                 0 <= u_i;
+
+                % No energy selling and buying at the same time.
+
             end
     cvx_end
     first_u = u(:,1);
