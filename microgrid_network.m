@@ -21,6 +21,7 @@ mgs = [mg1, mg2, mg3];
 
 % Initialize MPC config
 mpc_config = get_mpc_config(n, m, Nc, Np, dt);
+demand = load_demand(2016);
 
 %% Solve using our own optimization loop with CVX
 num_time_steps = 72;
@@ -28,7 +29,10 @@ num_hours = num_time_steps + Np;
 
 % Load energy and demand data
 [wt, pv] = get_energy_data(mgs, 5, 1, num_hours);
-D = (wt+pv)*0.5;
+mg1_demand = get_demand_data(demand.demand_data, 5, 15, 1, num_hours, "DE_KN_industrial1_grid_import");
+mg2_demand = 20.*get_demand_data(demand.demand_data, 5, 15, 1, num_hours, "DE_KN_industrial2_grid_import");
+mg3_demand = 20.*get_demand_data(demand.demand_data, 5, 15, 1, num_hours, "DE_KN_residential1_grid_import");
+D = [mg1_demand; mg2_demand; mg3_demand];
 
 % Initialize state and inputs
 x = zeros(n, num_time_steps+1);
@@ -155,7 +159,7 @@ legend(["MG1", "MG2", "MG3"])
 title("Energy stored")
 ylabel("Energy stored (kWh)")
 xlabel("Time step (hour)")
-ylim([0,max(cap)+50])
+%ylim([0,max(cap)+50])
 
 figure(2)
 plot(u(4,:))
@@ -370,7 +374,24 @@ function params = get_beta_params(beta_params, latitude, longitude, month, hour)
     params = [data.beta_params_a{month, hour}, data.beta_params_b{month, hour}, data.beta_params_scaling{month, hour}];
 end
 
-%%
+function demand = load_demand(selected_year)
+    demand = load(sprintf("energy_demand_%d.mat", selected_year));
+end
+
+function demand_data = get_demand_data(demand_table, month, day, hour, num_hours, param_name)
+    demand_data = [];
+    % Find the row index that matches the given year, month, day, and hour
+    idx = find(demand_table.("month") == month & demand_table.("day") == day & demand_table.("hour") == hour, 1);
+    % Check if index was found
+    if isempty(idx)
+        error('No matching timestamp found in the data.');
+    end
+    % Extract the requested data for the specified number of hours
+    end_idx = min(idx + num_hours - 1, height(demand_table)); % Ensure it doesn't exceed table size
+    demand_data = table2array(demand_table(idx:end_idx, param_name))'; % Return the subset of data
+end
+
+
 %% Use MPC Controller
 % Define MPC Controller
 controller = nlmpc(3, 3, 24);
