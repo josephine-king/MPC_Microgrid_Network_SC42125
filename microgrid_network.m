@@ -1,7 +1,7 @@
 % Define parameters
 % Control parameters
-Nc = 24; % Control horizon (hours)
-Np = 24; % Prediction horizon (hours)
+Nc = 12; % Control horizon (hours)
+Np = 12; % Prediction horizon (hours)
 dt = 1;  % Time step (hours)
 n = 3;   % Number of state variables
 m = 24;  % Number of input variables
@@ -14,9 +14,12 @@ beta_c = 1; % Charging efficiency
 beta_d = 1;  % Discharging efficiency
 
 % Initialize microgrids
-mg1 = define_microgrid(51.93, 4.5, 0, 3, 12, 25, 5000, 0.8, 0.2, 0.8, 1000, beta_c, beta_d); % Solar only 
-mg2 = define_microgrid(51.93, 4.5, 800, 3, 12, 25, 0, 0.8, 0.2, 0.8, 1000, beta_c, beta_d);  % Wind only 
-mg3 = define_microgrid(51.93, 4.5, 400, 3, 12, 25, 2500, 0.8, 0.2, 0.8, 1000, beta_c, beta_d); % Hybrid
+% Solar only, residential 
+mg1 = define_microgrid(51.93, 4.5, 0, 3, 12, 25, 5000, 0.8, 0.2, 0.8, 1000, 1, 1); % Solar only 
+% Wind only, industrial
+mg2 = define_microgrid(51.93, 4.5, 800, 3, 12, 25, 0, 0.8, 0.2, 0.8, 1000, 0.9, 0.9);  % Wind only 
+% Wind + solar - "public"
+mg3 = define_microgrid(51.93, 4.5, 400, 3, 12, 25, 2500, 0.8, 0.2, 0.8, 1000, 0.8, 0.8); % Hybrid
 mgs = [mg1, mg2, mg3];
 
 % Initialize MPC config
@@ -27,18 +30,20 @@ demand = load_demand(2016);
 num_time_steps = 72;
 num_hours = num_time_steps + Np;
 
+sel_month = 6;
+
 % Load energy and demand data
-[wt, pv] = get_energy_data(mgs, 5, 1, num_hours);
-mg1_demand = get_demand_data(demand.demand_data, 5, 15, 1, num_hours, "DE_KN_industrial1_grid_import");
-mg2_demand = 20.*get_demand_data(demand.demand_data, 5, 15, 1, num_hours, "DE_KN_industrial2_grid_import");
-mg3_demand = 20.*get_demand_data(demand.demand_data, 5, 15, 1, num_hours, "DE_KN_residential1_grid_import");
+[wt, pv] = get_energy_data(mgs, sel_month, 1, num_hours);
+mg1_demand = 100.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_residential1_grid_import");
+mg2_demand = 8.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_industrial1_grid_import");
+mg3_demand = 12.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_public1_grid_import");
 D = [mg1_demand; mg2_demand; mg3_demand];
 
 % Initialize state and inputs
 x = zeros(n, num_time_steps+1);
 u = zeros(m, num_time_steps+1);
 for i = 1:n
-    x(i,1) = mgs(i).cap./2;
+    x(i,1) = 0.3.*mgs(i).cap;
 end
 u(:,1) = zeros(m,1);
 
@@ -90,10 +95,8 @@ function first_u = solve_mpc(state, mpc_config, mgs, wt, pv, D)
         for i = 1:N
             for mg = 1:n
                 mg_offset = num_mg_inputs*(mg-1);
-                J = J + u(grid_buy_idx + mg_offset, i) + u(grid_sell_idx + mg_offset, i); 
-                %for offset = mg_sell_idx_start:mg_sell_idx_end
-                %    J = J + u(offset + mg_offset, i);
-                %end
+                J = J + 4*(x(mg,i) - 0.6*mgs(mg).cap)^2;
+                J = J + 2*u(grid_buy_idx + mg_offset, i) + u(grid_sell_idx + mg_offset, i); 
             end
         end
         minimize(J)
@@ -267,6 +270,28 @@ plot(D(3,:))
 legend(["MG1", "MG2", "MG3"])
 title("Power demand")
 ylabel("Power demand (kW)")
+xlabel("Time step (hour)")
+
+figure(7)
+plot(wt(1,:) + pv(1,:) - D(1,:))
+hold on
+plot(wt(2,:) + pv(2,:) - D(2,:))
+hold on
+plot(wt(3,:) + pv(3,:) - D(3,:))
+legend(["MG1", "MG2", "MG3"])
+title("Power balance")
+ylabel("Power balance (kW)")
+xlabel("Time step (hour)")
+
+figure(8)
+plot(u(1,:))
+hold on
+plot(u(9,:))
+hold on
+plot(u(17,:))
+legend(["MG1", "MG2", "MG3"])
+title("Power balance")
+ylabel("Power balance (kW)")
 xlabel("Time step (hour)")
 
 %% Testing and plotting energy modeling code
