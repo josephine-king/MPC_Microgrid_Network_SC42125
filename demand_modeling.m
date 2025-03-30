@@ -21,7 +21,7 @@ demand_data.("hour") = hour(date);
 demand_data = demand_data(demand_data.("year") == selected_year, :);
 save(sprintf("energy_demand_%d.mat", selected_year), "demand_data");
 
-years = get_valid_years(demand_data, "DE_KN_residential4_grid_import");
+years = get_valid_years(demand_data, "DE_KN_public2_grid_import");
 date = datetime("2016-06-28", "Format", "yyyy-MM-dd");
 isweekend(date)
 demand_industrial = get_energy_demand_day(demand_data, 2016, 6, 23, "DE_KN_industrial1_grid_import");
