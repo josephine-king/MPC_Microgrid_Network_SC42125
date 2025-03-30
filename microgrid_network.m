@@ -2,23 +2,22 @@
 % Control parameters
 N = 24; % Control and prediction horizon (hours)
 dt = 1;  % Time step (hours)
-n = 3;   % Number of state variables
-m = 24;  % Number of input variables
+n = 3;   % Number of state variables (number of microgrids)
+m = 21;  % Number of input variables
 dt = 1;  % Time step in hours
 % Microgrid network topology 
-M = 3; % Number of microgrids
 L = ones(M, M) - eye(M, M); % Links between microgrids
 % General microgrid parameters 
-beta_c = 1; % Charging efficiency
-beta_d = 1;  % Discharging efficiency
+beta_c = 0.9; % Charging efficiency
+beta_d = 0.9;  % Discharging efficiency
 
 % Initialize microgrids
 % Solar only, residential 
-mg1 = define_microgrid(1, L, 51.93, 4.5, 0, 3, 12, 25, 5000, 0.8, 0.2, 0.8, 2000, beta_c, beta_d); % Solar only 
+mg1 = define_microgrid(L, 51.93, 4.5, 0, 3, 12, 25, 5000, 0.8, 0.2, 0.8, 2000, beta_c, beta_d); % Solar only 
 % Wind only, industrial
-mg2 = define_microgrid(2, L, 51.93, 4.5, 800, 3, 12, 25, 0, 0.8, 0.2, 0.8, 2000, beta_c, beta_d);  % Wind only 
+mg2 = define_microgrid(L, 51.93, 4.5, 800, 3, 12, 25, 0, 0.8, 0.2, 0.8, 2000, beta_c, beta_d);  % Wind only 
 % Wind + solar - "public"
-mg3 = define_microgrid(3, L, 51.93, 4.5, 400, 3, 12, 25, 2500, 0.8, 0.2, 0.8, 2000, beta_c, beta_d); % Hybrid
+mg3 = define_microgrid(L, 51.93, 4.5, 400, 3, 12, 25, 2500, 0.8, 0.2, 0.8, 2000, beta_c, beta_d); % Hybrid
 mgs = [mg1, mg2, mg3];
 
 % Initialize MPC config
@@ -35,7 +34,8 @@ sel_month = 6;
 mg1_demand = 80.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_residential1_grid_import");
 mg2_demand = 4.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_industrial1_grid_import");
 mg3_demand = 10.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_public1_grid_import");
-D = [mg1_demand; mg2_demand; mg3_demand];
+D_true = [mg1_demand; mg2_demand; mg3_demand];
+D_pred = 20 + D_true;
 
 % Initialize state and inputs
 x = zeros(n, num_time_steps+1);
@@ -43,18 +43,13 @@ u = zeros(m, num_time_steps+1);
 for i = 1:n
     x(i,1) = mgs(i).min;
 end
-u(:,1) = zeros(m,1);
 
 for k = 1:num_time_steps
-    % Get energy generation and demand data
-    wt_k = wt(:, k:k+N);
-    pv_k = pv(:, k:k+N);
-    D_k = D(:, k:k+N);
     % Get optimal input from MPC controller
     sprintf("Solving MPC time step %0d", k)
-    u(:,k+1) = solve_mpc(x(:,k), mpc_config, mgs, wt_k, pv_k, D_k);
+    u(:,k) = solve_mpc(x(:,k), mpc_config, mgs, wt(:,k:k+N), pv(:,k:k+N), D_pred(:,k:k+N));
     % Apply state update
-    x(:,k+1) = state_function(x(:,k), u(:,k+1), mgs);
+    x(:,k+1) = state_function(x(:,k), u(:,k), wt(:,k), pv(:,k), D_true(:,k), mgs);
 end
 
 function first_u = solve_mpc(state, mpc_config, mgs, wt, pv, D)
@@ -64,14 +59,13 @@ function first_u = solve_mpc(state, mpc_config, mgs, wt, pv, D)
     n = mpc_config.n;
 
     charge_idx = 1;
-    discharge_idx = 2;
-    grid_sell_idx = 3;
-    mg_sell_idx_start = 4;
-    mg_sell_idx_end = 5;
-    grid_buy_idx = 6;
-    mg_buy_idx_start = 7;
-    mg_buy_idx_end = 8;
-    num_mg_inputs = 8;
+    grid_sell_idx = 2;
+    mg_sell_idx_start = 3;
+    mg_sell_idx_end = 4;
+    grid_buy_idx = 5;
+    mg_buy_idx_start = 6;
+    mg_buy_idx_end = 7;
+    num_mg_inputs = 7;
 
     cvx_begin quiet
         variable u(m,N); % Control sequence
@@ -86,11 +80,13 @@ function first_u = solve_mpc(state, mpc_config, mgs, wt, pv, D)
 
         % Define cost function
         J = 0;
-        for i = 1:N
-            for mg = 1:n
-                mg_offset = num_mg_inputs*(mg-1);
-                J = J + 4*(x(mg,i) - mgs(mg).ref)^2;
-                J = J + 2*u(grid_buy_idx + mg_offset, i) + u(grid_sell_idx + mg_offset, i); 
+        for k = 1:N
+            mg_offset = 0;
+            for i = 1:n
+                mg = mgs(i);
+                J = J + 4*(x(i,k) - mg.ref)^2;
+                J = J + 2*u(mg.grid_buy_idx + mg_offset, k) + u(mg.grid_sell_idx + mg_offset, k);
+                mg_offset = mg_offset + mg.num_mg_inputs;
             end
         end
         minimize(J)
@@ -98,91 +94,80 @@ function first_u = solve_mpc(state, mpc_config, mgs, wt, pv, D)
         % Constraints
         subject to 
 
+            mg_offset = 0;
             % State constraints     
-            for mg = 1:n
-                mg_offset = num_mg_inputs*(mg-1);
-                beta_c = mgs(mg).beta_c;
-                beta_d = mgs(mg).beta_d;
-                max = mgs(mg).max;
-                min = mgs(mg).min;
-                ref = mgs(mg).ref;
-                num_connections = mgs(mg).num_connections;
-                max_grid_sell = mgs(mg).max_grid_sell;
-                max_grid_buy = mgs(mg).max_grid_buy;
-                max_mg_sell = mgs(mg).max_mg_sell;
-                max_mg_buy = mgs(mg).max_mg_buy;
-                max_charge = mgs(mg).max_charge;
-                max_discharge = mgs(mg).max_discharge;
-                max_power_bal = mgs(mg).max_power_bal;
-                min_power_bal = mgs(mg).min_power_bal;
+            for i = 1:n
+                mg = mgs(i);
 
                 % Initial state
-                x(mg,1) == state(mg);
-                % Terminal constraint
-                x(mg,N) == ref;
+                x(i,1) == state(i);
 
                 % State update constraints
-                for i = 1:N-1
-                    x(mg,i+1) == x(mg,i) + beta_c*u(charge_idx + mg_offset, i) - beta_d*u(discharge_idx + mg_offset, i);
+                for k = 1:N-1
+                    x(i,k+1) == x(i,k) + mg.beta_c*u(mg.charge_idx + mg_offset, k);
                 end
 
-                for i = 1:N
-                    u_i = u(:,i);
+                for k = 1:N
+                    u_k = u(:,k);
 
                     % State constraints
-                    min <= x(mg,i) <= max;
+                    mg.min <= x(i,k) <= mg.max;
 
                     % Input constraints
-                    % All inputs must be non-negative 
-                    0 <= u_i;
                     % Constraints on charging and discharging
-                    u_i(charge_idx + mg_offset) <= max_charge;
-                    u_i(discharge_idx + mg_offset) <= max_discharge;
+                    mg.min_charge <= u_k(mg.charge_idx + mg_offset) <= mg.max_charge;
                     % Constraints on selling and buying 
-                    u_i(grid_sell_idx + mg_offset) <= max_grid_sell;
-                    u_i(grid_buy_idx + mg_offset) <= max_grid_buy;
-                    u_i(mg_buy_idx_start:mg_sell_idx_end) <= max_mg_sell;
-                    u_i(mg_buy_idx_start:mg_buy_idx_end) <= max_mg_buy;
+                    0 <= u_k(mg.grid_sell_idx + mg_offset) <= mg.max_grid_sell;
+                    0 <= u_k(mg.grid_buy_idx + mg_offset) <= mg.max_grid_buy;
+                    for j = 1:mg.num_connections
+                        0 <= u_k(mg.mg_sell_idx_start + mg_offset + j - 1) <= mg.max_mg_sell;
+                        0 <= u_k(mg.mg_buy_idx_start + mg_offset + j - 1) <= mg.max_mg_buy;
+                    end
 
                     % Energy balance constraints 
                     % Left side of equation 
-                    ubal_lhs(mg,i) = wt(mg,i) + pv(mg,i) - D(mg,i);
+                    ubal_lhs(i,k) = wt(i,k) + pv(i,k) - D(i,k);
                     % Right side of equation
-                    energy_sold = sum(u_i(grid_sell_idx + mg_offset : mg_sell_idx_end + mg_offset));
-                    energy_bought = sum(u_i(grid_buy_idx + mg_offset : mg_buy_idx_end + mg_offset));
-                    u_char = u_i(charge_idx + mg_offset);
-                    u_dischar = u_i(discharge_idx + mg_offset);
-                    ubal_rhs(mg,i) = energy_sold - energy_bought + beta_c*u_char - beta_d*u_dischar;
+                    energy_sold = sum(u_k(mg.grid_sell_idx + mg_offset : mg.mg_sell_idx_end + mg_offset));
+                    energy_bought = sum(u_k(mg.grid_buy_idx + mg_offset : mg.mg_buy_idx_end + mg_offset));
+                    ubal_rhs(i,k) = energy_sold - energy_bought + mg.beta_c*u_k(mg.charge_idx + mg_offset);
                     % Left and right side must be equal
-                    ubal_lhs(mg,i) - ubal_rhs(mg,i) == 0;
+                    ubal_lhs(i,k) - ubal_rhs(i,k) == 0;
                 
                     % Energy sold from one grid must match energy bought from other grid
                     % Loop through the microgrid's connections
-                    for c = 1:mgs(mg).num_connections
-                        connection_idx = mgs(mg).connections(c);
-                        connection_offset = num_mg_inputs*(connection_idx - 1);
-                        if (connection_idx < mgs(mg).index)
-                            offset = -2;
-                        else
-                            offset = -1;
+                    connection_offset = 0;
+                    for j = 1:n
+                        % Check if j and i are connected
+                        if ~isempty(find(mg.connections == j))
+                            if (j < i)
+                                offseti = -2;
+                                offsetj = -1;
+                            else
+                                offseti = -1;
+                                offsetj = -2;
+                            end
+                            u_k(mg.mg_sell_idx_start + j + offsetj + mg_offset) == u_k(mgs(j).mg_buy_idx_start + i + offseti + connection_offset);
                         end
-                        u_i(mg_sell_idx_start + c - 1 + mg_offset) == u_i(mg_buy_idx_start + mgs(mg).index + offset + connection_offset);
+                        connection_offset = connection_offset + mgs(j).num_mg_inputs;
                     end
 
                     % We cannot buy and sell at the same time
                     % If we are selling, u_bal > 0
-                    u_i(grid_sell_idx + mg_offset) <= max_grid_sell * delta(mg,i);                    
-                    u_i(mg_sell_idx_start + mg_offset) <= max_mg_sell * delta(mg,i);    
-                    u_i(mg_sell_idx_end + mg_offset) <= max_mg_sell * delta(mg,i);
-                    ubal_lhs(mg,i) >= min_power_bal * (1 - delta(mg,i));
+                    u_k(mg.grid_sell_idx + mg_offset) <= mg.max_grid_sell * delta(i,k);                    
+                    u_k(mg.mg_sell_idx_start + mg_offset) <= mg.max_mg_sell * delta(i,k);    
+                    u_k(mg.mg_sell_idx_end + mg_offset) <= mg.max_mg_sell * delta(i,k);
+                    ubal_lhs(i,k) >= mg.min_power_bal * (1 - delta(i,k));
                     % If we are buying, u_bal < 0
-                    u_i(grid_buy_idx + mg_offset) <= max_grid_buy * (1 - delta(mg,i));
-                    u_i(mg_buy_idx_start + mg_offset) <= max_mg_buy * (1 - delta(mg,i));    
-                    u_i(mg_buy_idx_end + mg_offset) <= max_mg_buy * (1 - delta(mg,i));
-                    ubal_lhs(mg,i) <= max_power_bal * delta(mg,i);
+                    u_k(mg.grid_buy_idx + mg_offset) <= mg.max_grid_buy * (1 - delta(i,k));
+                    u_k(mg.mg_buy_idx_start + mg_offset) <= mg.max_mg_buy * (1 - delta(i,k));    
+                    u_k(mg.mg_buy_idx_end + mg_offset) <= mg.max_mg_buy * (1 - delta(i,k));
+                    ubal_lhs(i,k) <= mg.max_power_bal * delta(i,k);
 
                 end 
                 
+                mg_offset = mg_offset + mg.num_mg_inputs;
+
             end
 
     cvx_end
@@ -206,17 +191,17 @@ ylabel("Energy stored (kWh)")
 xlabel("Time step (hour)")
 
 figure(2)
+plot(u(3,:))
+hold on
 plot(u(4,:))
 hold on
-plot(u(5,:))
+plot(u(10,:))
 hold on
-plot(u(12,:))
+plot(u(11,:))
 hold on
-plot(u(13,:))
+plot(u(17,:))
 hold on
-plot(u(20,:))
-hold on
-plot(u(21,:))
+plot(u(18,:))
 hold on
 legend(["MG1 to MG2", "MG1 to MG3", "MG2 to MG1", "MG2 to MG3", "MG3 to MG1", "MG3 to MG2"])
 title("Power sold to MGs")
@@ -224,17 +209,17 @@ ylabel("Power sold (kW)")
 xlabel("Time step (hour)")
 
 figure(3)
+plot(u(6,:))
+hold on
 plot(u(7,:))
 hold on
-plot(u(8,:))
+plot(u(13,:))
 hold on
-plot(u(15,:))
+plot(u(14,:))
 hold on
-plot(u(16,:))
+plot(u(20,:))
 hold on
-plot(u(23,:))
-hold on
-plot(u(24,:))
+plot(u(21,:))
 hold on
 legend(["MG1 to MG2", "MG1 to MG3", "MG2 to MG1", "MG2 to MG3", "MG3 to MG1", "MG3 to MG2"])
 title("Power purchased from MGs")
@@ -242,22 +227,22 @@ ylabel("Power purchased (kW)")
 xlabel("Time step (hour)")
 
 figure(4)
-plot(u(3,:))
+plot(u(2,:))
 hold on
-plot(u(11,:))
+plot(u(9,:))
 hold on
-plot(u(19,:))
+plot(u(16,:))
 legend(["MG1", "MG2", "MG3"])
 title("Power sold to DNO")
 ylabel("Power sold (kW)")
 xlabel("Time step (hour)")
 
 figure(5)
-plot(u(6,:))
+plot(u(5,:))
 hold on
-plot(u(14,:))
+plot(u(12,:))
 hold on
-plot(u(22,:))
+plot(u(19,:))
 legend(["MG1", "MG2", "MG3"])
 title("Power purchased from DNO")
 ylabel("Power purchased (kW)")
@@ -286,28 +271,33 @@ ylabel("Power balance (kW)")
 xlabel("Time step (hour)")
 
 figure(8)
-plot(u(3,:)+u(4,:)+u(5,:))
+plot(u(2,:)+u(3,:)+u(4,:))
 hold on
-plot(u(6,:)+u(7,:)+u(8,:))
+plot(u(5,:)+u(6,:)+u(7,:))
+title("MG1 total power bought and sold")
+legend(["Sold", "Bought"])
 
 
 %% Functions
 
 % State function
-function z = state_function(x, u, mgs)
+function next_x = state_function(x, u, wt, pv, D, mgs)
     n = length(x);
-    z = x;
+    mg_offset = 0;
     for mg_idx = 1:n
         mg = mgs(mg_idx);
-        z(mg_idx) = z(mg_idx) + mg.beta_c*u(1 + 8*(mg_idx-1)) - mg.beta_d*u(2 + 8*(mg_idx-1));
+        energy_sold = sum(u(mg.grid_sell_idx + mg_offset : mg.mg_sell_idx_end + mg_offset));
+        energy_bought = sum(u(mg.grid_buy_idx + mg_offset : mg.mg_buy_idx_end + mg_offset));
+        next_x(mg_idx) = x(mg_idx) + energy_bought - energy_sold + wt(mg_idx) + pv(mg_idx) - D(mg_idx);
+        mg_offset = mg_offset + mgs(mg_idx).num_mg_inputs;
     end
-    reshape(z, [n,1]);
+    reshape(next_x, [n,1]);
 end
 
 % Create a microgrid struct with the given parameters
-function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, vr, vf, Spv, Pf, epv, epc, cap, beta_c, beta_d)
+function mg = define_microgrid(adj_matrix, latitude, longitude, Pr, vc, vr, vf, Spv, Pf, epv, epc, cap, beta_c, beta_d)
     
-    mg.index = index;
+    % Connections
     mg.num_connections = sum(adj_matrix(index,:));
     mg.connections = find(adj_matrix(index,:));
 
@@ -331,24 +321,24 @@ function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, v
     mg.max = 0.8*cap;
     mg.min = 0.2*cap;
     mg.ref = 0.6*cap;
-    mg.max_grid_buy = 1000;
-    mg.max_grid_sell = 1000;
-    mg.max_mg_buy = 1000;
-    mg.max_mg_sell = 1000;
+    mg.max_grid_buy = 500;
+    mg.max_grid_sell = 500;
+    mg.max_mg_buy = 300;
+    mg.max_mg_sell = 300;
     mg.max_charge = 1000;
-    mg.max_discharge = 1000;
+    mg.min_charge = -1000;
     mg.max_power_bal = mg.num_connections * mg.max_mg_sell + mg.max_grid_sell + mg.max_charge;
-    mg.min_power_bal = -(mg.num_connections * mg.max_mg_buy + mg.max_grid_buy + mg.max_discharge);
+    mg.min_power_bal = -(mg.num_connections * mg.max_mg_buy + mg.max_grid_buy) + mg.min_charge;
 
+    % Input indices 
     mg.charge_idx = 1;
-    mg.discharge_idx = 2;
-    mg.grid_sell_idx = 3;
-    mg.mg_sell_idx_start = 4;
+    mg.grid_sell_idx = 2;
+    mg.mg_sell_idx_start = 3;
     mg.mg_sell_idx_end = mg.mg_sell_idx_start + mg.num_connections - 1;
     mg.grid_buy_idx = mg.mg_sell_idx_end + 1;
     mg.mg_buy_idx_start = mg.grid_buy_idx + 1;
     mg.mg_buy_idx_end = mg.mg_buy_idx_start + mg.num_connections - 1;
-    mg.num_mg_inputs = mg_buy_idx_end;
+    mg.num_mg_inputs = mg.mg_buy_idx_end;
 
 end
 
