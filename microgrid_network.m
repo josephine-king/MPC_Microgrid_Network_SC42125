@@ -85,7 +85,7 @@ function first_u = solve_mpc(state, mpc_config, mgs, wt, pv, D)
             for i = 1:n
                 mg = mgs(i);
                 J = J + 4*(x(i,k) - mg.ref)^2;
-                J = J + 2*u(mg.grid_buy_idx + mg_offset, k) + u(mg.grid_sell_idx + mg_offset, k);
+                J = J + 0.5*u(mg.grid_buy_idx + mg_offset, k)^2 + 0.25*u(mg.grid_sell_idx + mg_offset, k)^2;
                 mg_offset = mg_offset + mg.num_mg_inputs;
             end
         end
@@ -135,18 +135,31 @@ function first_u = solve_mpc(state, mpc_config, mgs, wt, pv, D)
                     ubal_lhs(i,k) - ubal_rhs(i,k) == 0;
                 
                     % Energy sold from one grid must match energy bought from other grid
+                    % If two MGs are not connected, they should not
+                    % exchange power
                     % Loop through the microgrid's connections
                     connection_offset = 0;
                     for j = 1:n
-                        % Check if j and i are connected
-                        if ~isempty(find(mg.connections == j))
-                            if (j < i)
-                                offseti = -2;
-                                offsetj = -1;
-                            else
-                                offseti = -1;
-                                offsetj = -2;
-                            end
+                        % Skip the current microgrid
+                        if (j == i) 
+                            connection_offset = connection_offset + mgs(j).num_mg_inputs;
+                            continue
+                        end
+                        if (j < i)
+                            offseti = -2;
+                            offsetj = -1;
+                        else
+                            offseti = -1;
+                            offsetj = -2;
+                        end
+                        % Not connected - power bought/sold is constrained
+                        % to 0
+                        if isempty(find(mg.connections == j))
+                            u_k(mg.mg_sell_idx_start + j + offsetj + mg_offset) == 0;
+                            u_k(mgs(j).mg_buy_idx_start + i + offseti + connection_offset) == 0;
+                        % Connected - power sold from one grid must equal
+                        % power bought by another
+                        else
                             u_k(mg.mg_sell_idx_start + j + offsetj + mg_offset) == u_k(mgs(j).mg_buy_idx_start + i + offseti + connection_offset);
                         end
                         connection_offset = connection_offset + mgs(j).num_mg_inputs;
@@ -180,14 +193,14 @@ end
 
 %% Plotting
 figure(1)
-plot(x(1,:))
+plot(100.*x(1,:)/mg1.cap)
 hold on
-plot(x(2,:))
+plot(100.*x(2,:)/mg2.cap)
 hold on
-plot(x(3,:))
+plot(100.*x(3,:)/mg3.cap)
 legend(["MG1", "MG2", "MG3"])
-title("Energy stored")
-ylabel("Energy stored (kWh)")
+title("Battery Percent Charged (%)")
+ylabel("Battery Percent Charged (%)")
 xlabel("Time step (hour)")
 
 figure(2)
