@@ -1,4 +1,5 @@
 % Define parameters
+cvx_solver Mosek
 % Control parameters
 N = 24; % Control and prediction horizon (hours)
 dt = 1;  % Time step (hours)
@@ -6,18 +7,19 @@ n = 3;   % Number of state variables (number of microgrids)
 m = 21;  % Number of input variables
 dt = 1;  % Time step in hours
 % Microgrid network topology 
-L = ones(M, M) - eye(M, M); % Links between microgrids
+M = 3;
+L = ones(n, n) - eye(n, n); % Links between microgrids
 % General microgrid parameters 
 beta_c = 0.9; % Charging efficiency
 beta_d = 0.9;  % Discharging efficiency
 
 % Initialize microgrids
-% Solar only, residential 
-mg1 = define_microgrid(L, 51.93, 4.5, 0, 3, 12, 25, 5000, 0.8, 0.2, 0.8, 2000, beta_c, beta_d); % Solar only 
+% Solar only, residential
+mg1 = define_microgrid(1, L, 51.93, 4.5, 0, 3, 12, 25, 5000, 0.8, 0.2, 0.8, 2000, beta_c, beta_d); % Solar only 
 % Wind only, industrial
-mg2 = define_microgrid(L, 51.93, 4.5, 800, 3, 12, 25, 0, 0.8, 0.2, 0.8, 2000, beta_c, beta_d);  % Wind only 
+mg2 = define_microgrid(2, L, 51.93, 4.5, 800, 3, 12, 25, 0, 0.8, 0.2, 0.8, 2000, beta_c, beta_d);  % Wind only 
 % Wind + solar - "public"
-mg3 = define_microgrid(L, 51.93, 4.5, 400, 3, 12, 25, 2500, 0.8, 0.2, 0.8, 2000, beta_c, beta_d); % Hybrid
+mg3 = define_microgrid(3, L, 51.93, 4.5, 400, 3, 12, 25, 2500, 0.8, 0.2, 0.8, 2000, beta_c, beta_d); % Hybrid
 mgs = [mg1, mg2, mg3];
 
 % Initialize MPC config
@@ -262,22 +264,22 @@ ylabel("Power purchased (kW)")
 xlabel("Time step (hour)")
 
 figure(6)
-plot(D(1,:))
+plot(D_true(1,:))
 hold on
-plot(D(2,:))
+plot(D_true(2,:))
 hold on
-plot(D(3,:))
+plot(D_true(3,:))
 legend(["MG1", "MG2", "MG3"])
 title("Power demand")
 ylabel("Power demand (kW)")
 xlabel("Time step (hour)")
 
 figure(7)
-plot(wt(1,:) + pv(1,:) - D(1,:))
+plot(wt(1,:) + pv(1,:) - D_true(1,:))
 hold on
-plot(wt(2,:) + pv(2,:) - D(2,:))
+plot(wt(2,:) + pv(2,:) - D_true(2,:))
 hold on
-plot(wt(3,:) + pv(3,:) - D(3,:))
+plot(wt(3,:) + pv(3,:) - D_true(3,:))
 legend(["MG1", "MG2", "MG3"])
 title("Power balance")
 ylabel("Power balance (kW)")
@@ -308,7 +310,7 @@ function next_x = state_function(x, u, wt, pv, D, mgs)
 end
 
 % Create a microgrid struct with the given parameters
-function mg = define_microgrid(adj_matrix, latitude, longitude, Pr, vc, vr, vf, Spv, Pf, epv, epc, cap, beta_c, beta_d)
+function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, vr, vf, Spv, Pf, epv, epc, cap, beta_c, beta_d)
     
     % Connections
     mg.num_connections = sum(adj_matrix(index,:));
