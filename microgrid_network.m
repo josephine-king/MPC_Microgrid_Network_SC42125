@@ -49,10 +49,12 @@ elseif Disturbance == "sine"
     t = 0:num_hours-1;
     sine_disturbance = amp * sin(freq * t);
     mg1_demand = mg1_demand + sine_disturbance;
+    mg2_demand = mg2_demand - sine_disturbance;
+    mg3_demand = mg3_demand + 1.5*sine_disturbance;
 end
 
 D_true = [mg1_demand; mg2_demand; mg3_demand];
-D_pred = 20 + D_true;
+%D_pred = 20 + D_true;
 
 % Initialize state and inputs
 x = zeros(n, num_time_steps+1);
@@ -245,6 +247,9 @@ function first_u = solve_mpc(state, mpc_config, mgs, wt, pv, D)
 end
 
 %% Plotting
+
+close all
+
 figure(1)
 plot(100.*x(1,:)/mg1.cap)
 hold on
@@ -253,6 +258,7 @@ hold on
 plot(100.*x(3,:)/mg3.cap)
 legend(["MG1", "MG2", "MG3"])
 title("Battery Percent Charged (%)")
+ylim([55 65])
 ylabel("Battery Percent Charged (%)")
 xlabel("Time step (hour)")
 
@@ -391,8 +397,8 @@ function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, v
     mg.max_grid_sell = 500;
     mg.max_mg_buy = 300;
     mg.max_mg_sell = 300;
-    mg.max_charge = 1000;
-    mg.min_charge = -1000;
+    mg.max_charge = 600;
+    mg.min_charge = -600;
     mg.max_power_bal = mg.num_connections * mg.max_mg_sell + mg.max_grid_sell + mg.max_charge;
     mg.min_power_bal = -(mg.num_connections * mg.max_mg_buy + mg.max_grid_buy) + mg.min_charge;
 
