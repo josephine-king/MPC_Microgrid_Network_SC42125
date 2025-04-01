@@ -9,16 +9,15 @@ dt = 1;  % Time step in hours
 % Microgrid network topology 
 L = ones(n, n) - eye(n, n); % Links between microgrids
 % General microgrid parameters 
-beta_c = 0.9; % Charging efficiency
-beta_d = 0.9;  % Discharging efficiency
+rte = 0.9; % Round trip efficiency 
 
 % Initialize microgrids
 % Solar only, residential
-mg1 = define_microgrid(1, L, 51.93, 4.5, 0, 3, 12, 25, 5000, 0.8, 0.2, 0.8, 2000, beta_c, beta_d); % Solar only 
+mg1 = define_microgrid(1, L, 51.93, 4.5, 0, 3, 12, 25, 5000, 0.8, 0.2, 0.8, 2000, rte); % Solar only 
 % Wind only, industrial
-mg2 = define_microgrid(2, L, 51.93, 4.5, 800, 3, 12, 25, 0, 0.8, 0.2, 0.8, 2000, beta_c, beta_d);  % Wind only 
+mg2 = define_microgrid(2, L, 51.93, 4.5, 800, 3, 12, 25, 0, 0.8, 0.2, 0.8, 2000, rte);  % Wind only 
 % Wind + solar - "public"
-mg3 = define_microgrid(3, L, 51.93, 4.5, 400, 3, 12, 25, 2500, 0.8, 0.2, 0.8, 2000, beta_c, beta_d); % Hybrid
+mg3 = define_microgrid(3, L, 51.93, 4.5, 400, 3, 12, 25, 2500, 0.8, 0.2, 0.8, 2000, rte); % Hybrid
 mgs = [mg1, mg2, mg3];
 
 % Initialize MPC config
@@ -32,29 +31,36 @@ sel_month = 6;
 
 % Load energy and demand data
 [wt, pv] = get_energy_data(mgs, sel_month, 1, num_hours);
-mg1_demand = 80.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_residential1_grid_import");
-mg2_demand = 4.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_industrial1_grid_import");
-mg3_demand = 10.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_public1_grid_import");
+mg1_demand = 80.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_residential1_grid_import") + 10;
+mg2_demand = 4.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_industrial1_grid_import") + 10;
+mg3_demand = 10.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_public1_grid_import") + 10;
+D_pred = [mg1_demand; mg2_demand; mg3_demand];
 
-% Adding a disturbance to create 'real' weather data
-Disturbance = "sine";
-if Disturbance == "constant"
-    mg1_demand = mg1_demand + 20;
-    mg2_demand = mg2_demand + 20;
-    mg3_demand = mg3_demand + 20;
-elseif Disturbance == "sine"
-    % Sine disturbance parameters
-    amp = 10;
-    freq = 2 * pi / 24;
-    t = 0:num_hours-1;
-    sine_disturbance = amp * sin(freq * t);
-    mg1_demand = mg1_demand + sine_disturbance;
-    mg2_demand = mg2_demand - sine_disturbance;
-    mg3_demand = mg3_demand + 1.5*sine_disturbance;
+amp = 10;
+freq = 2 * pi / 24;
+mg1_disturbance = get_sine_disturbance(amp, freq, 0, num_hours);
+mg2_disturbance = get_sine_disturbance(-amp, freq, 0, num_hours);
+mg3_disturbance = get_sine_disturbance(1.5*amp, freq, 0, num_hours);
+D_true = [mg1_demand + mg1_disturbance; mg2_demand + mg2_disturbance; mg3_demand + mg3_disturbance];
+
+% Initialize observer
+xhat_aug = cell(n,1);
+xhat_log = cell(n,1);
+[A_base, B_base, C_base, L] = init_observer(1, 2*pi/24, [0.7, 0.6, 0.5]);
+A_aug_all = cell(n,1);
+B_aug_all = cell(n,1);
+C_aug_all = cell(n,1);
+L_all = cell(n,1);
+dhat = cell(n,1);
+for i = 1:n
+    A_aug_all{i} = A_base;
+    B_aug_all{i} = B_base;
+    C_aug_all{i} = C_base;
+    L_all{i} = L;
+    xhat_aug{i} = [mgs(i).min; 0; 0];
+    xhat_log{i} = zeros(3, num_time_steps+1);
+    xhat_log{i}(:,1) = xhat_aug{i};
 end
-
-D_true = [mg1_demand; mg2_demand; mg3_demand];
-%D_pred = 20 + D_true;
 
 % Initialize state and inputs
 x = zeros(n, num_time_steps+1);
@@ -63,34 +69,17 @@ for i = 1:n
     x(i,1) = mgs(i).min;
 end
 
-% Initialize Luenberger observers for all MGs
-dt = 1;
-omega = 2*pi/24;
-A_base = [1, 1, 0; 0, 1, dt*omega; 0, -dt*omega, 1];
-B_base = [1; 0; 0];
-C_base = [1, 0, 0];
-observer_poles = [0.7, 0.6, 0.5];
-
-xhat_aug = cell(n,1);
-xhat_log = cell(n,1);
-A_aug_all = cell(n,1);
-B_aug_all = cell(n,1);
-C_aug_all = cell(n,1);
-L_all = cell(n,1);
-
-for i = 1:n
-    A_aug_all{i} = A_base;
-    B_aug_all{i} = B_base;
-    C_aug_all{i} = C_base;
-    L_all{i} = place(A_base', C_base', observer_poles)';
-    xhat_aug{i} = [mgs(i).min; 0; 0];
-    xhat_log{i} = zeros(3, num_time_steps+1);
-    xhat_log{i}(:,1) = xhat_aug{i};
-end
-
+A = zeros(n,1);
+freq = zeros(n,1);
 for k = 1:num_time_steps
     disp(["Solving MPC time step ", num2str(k)]);
-    u(:,k) = solve_mpc(x(:,k), mpc_config, mgs, wt(:,k:k+N), pv(:,k:k+N), D_pred(:,k:k+N));
+    
+    est_disturbance = zeros(n,N);
+    for i = 1:n
+        est_disturbance(i,:) = A(i)*sin(freq(i)*((1:N)+k));
+    end
+    
+    u(:,k) = solve_mpc(x(:,k), mpc_config, mgs, wt(:,k:k+N), pv(:,k:k+N), D_pred(:,k:k+N), est_disturbance);
     x(:,k+1) = state_function(x(:,k), u(:,k), wt(:,k), pv(:,k), D_true(:,k), mgs);
 
     for i = 1:n
@@ -103,11 +92,15 @@ for k = 1:num_time_steps
         u_idx = (i-1)*(m/n) + 1;  % Assuming charge index is first in block
         xhat_aug{i} = A_aug * xhat_aug{i} + B_aug * u(u_idx,k) + L * (y_k - C_aug * xhat_aug{i});
         xhat_log{i}(:,k+1) = xhat_aug{i};
+
+        % Estimate amplitude and frequency
+        A(i) = sqrt(xhat_aug{i}(2)^2 + xhat_aug{i}(3)^2);
+        freq(i) = atan2(xhat_aug{i}(3) - xhat_log{i}(3,k), xhat_aug{i}(2) - xhat_log{i}(2,k));
     end
 end
 
 
-function first_u = solve_mpc(state, mpc_config, mgs, wt, pv, D)
+function first_u = solve_mpc(state, mpc_config, mgs, wt, pv, D, est_disturbance)
 
     N = mpc_config.N;
     m = mpc_config.m;
@@ -159,7 +152,7 @@ function first_u = solve_mpc(state, mpc_config, mgs, wt, pv, D)
 
                 % State update constraints
                 for k = 1:N-1
-                    x(i,k+1) == x(i,k) + mg.beta_c*u(mg.charge_idx + mg_offset, k);
+                    x(i,k+1) == x(i,k) + mg.rte*u(mg.charge_idx + mg_offset, k) + est_disturbance(i,k);
                 end
 
                 for k = 1:N
@@ -185,7 +178,7 @@ function first_u = solve_mpc(state, mpc_config, mgs, wt, pv, D)
                     % Right side of equation
                     energy_sold = sum(u_k(mg.grid_sell_idx + mg_offset : mg.mg_sell_idx_end + mg_offset));
                     energy_bought = sum(u_k(mg.grid_buy_idx + mg_offset : mg.mg_buy_idx_end + mg_offset));
-                    ubal_rhs(i,k) = energy_sold - energy_bought + mg.beta_c*u_k(mg.charge_idx + mg_offset);
+                    ubal_rhs(i,k) = energy_sold - energy_bought + mg.rte*u_k(mg.charge_idx + mg_offset);
                     % Left and right side must be equal
                     ubal_lhs(i,k) - ubal_rhs(i,k) == 0;
                 
@@ -251,14 +244,14 @@ end
 close all
 
 figure(1)
-plot(100.*x(1,:)/mg1.cap)
+plot(100.*x(1,:)/mg1.cap,"--")
 hold on
-plot(100.*x(2,:)/mg2.cap)
+plot(100.*x(2,:)/mg2.cap,"--")
 hold on
-plot(100.*x(3,:)/mg3.cap)
+plot(100.*x(3,:)/mg3.cap,"--")
 legend(["MG1", "MG2", "MG3"])
 title("Battery Percent Charged (%)")
-ylim([55 65])
+%ylim([55 65])
 ylabel("Battery Percent Charged (%)")
 xlabel("Time step (hour)")
 
@@ -326,7 +319,13 @@ hold on
 plot(D_true(2,:))
 hold on
 plot(D_true(3,:))
-legend(["MG1", "MG2", "MG3"])
+hold on 
+plot(D_pred(1,:), '--')
+hold on
+plot(D_pred(2,:), '--')
+hold on
+plot(D_pred(3,:), '--')
+legend(["MG1", "MG2", "MG3", "MG1 Pred", "MG2 Pred", "MG3 Pred"])
 title("Power demand")
 ylabel("Power demand (kW)")
 xlabel("Time step (hour)")
@@ -349,6 +348,18 @@ plot(u(5,:)+u(6,:)+u(7,:))
 title("MG1 total power bought and sold")
 legend(["Sold", "Bought"])
 
+figure(9)
+plot(sqrt(xhat_log{1}(2,:).^2 + xhat_log{1}(3,:).^2))
+%hold on
+%plot(xhat_log{1}(3,:))
+hold on
+plot(mg1_disturbance)
+
+figure(10)
+plot(est_disturbance(1,:))
+hold on
+plot(mg1_disturbance)
+
 
 %% Functions
 
@@ -367,7 +378,7 @@ function next_x = state_function(x, u, wt, pv, D, mgs)
 end
 
 % Create a microgrid struct with the given parameters
-function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, vr, vf, Spv, Pf, epv, epc, cap, beta_c, beta_d)
+function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, vr, vf, Spv, Pf, epv, epc, cap, rte)
     
     % Connections
     mg.num_connections = sum(adj_matrix(index,:));
@@ -385,8 +396,7 @@ function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, v
     mg.epv = epv;             % Module reference efficiency (10 - 23% depending on the type of panel)
     mg.epc = epc;             % Power conditioning efficiency (need to figure this out, just put 1 for now)
     mg.cap = cap;             % Storage capacity, in kWh
-    mg.beta_c = beta_c;       % Charging efficiency
-    mg.beta_d = beta_d;       % Discharging efficiency
+    mg.rte = rte;             % Round trip efficiency
 
     % Constraints
     % Need to find sources for these values
@@ -503,3 +513,20 @@ function [wt, pv] = get_energy_data(mgs, month, start_hour, num_hours)
     end
 end
 
+function disturbance = get_sine_disturbance(amp, freq, phase, num_hours)
+    t = 0:num_hours-1;
+    disturbance = amp * sin(freq * t + phase);
+end
+
+function disturbance = get_const_disturbance(val, num_hours)
+    t = ones(1, num_hours);
+    disturbance = t.*val;
+end
+
+% Initialize Luenberger observers for all MGs
+function [A_base, B_base, C_base, L] = init_observer(dt, omega, poles) 
+    A_base = [1, 1, 0; 0, 1, dt*omega; 0, -dt*omega, 1];
+    B_base = [1; 0; 0];
+    C_base = [1, 0, 0];
+    L = place(A_base', C_base', poles)';
+end
