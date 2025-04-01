@@ -1,13 +1,12 @@
 % Define parameters
-cvx_solver Mosek
+%cvx_solver Mosek
 % Control parameters
-N = 24; % Control and prediction horizon (hours)
+N = 6; % Control and prediction horizon (hours)
 dt = 1;  % Time step (hours)
 n = 3;   % Number of state variables (number of microgrids)
 m = 21;  % Number of input variables
 dt = 1;  % Time step in hours
 % Microgrid network topology 
-M = 3;
 L = ones(n, n) - eye(n, n); % Links between microgrids
 % General microgrid parameters 
 beta_c = 0.9; % Charging efficiency
@@ -36,6 +35,22 @@ sel_month = 6;
 mg1_demand = 80.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_residential1_grid_import");
 mg2_demand = 4.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_industrial1_grid_import");
 mg3_demand = 10.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_public1_grid_import");
+
+% Adding a disturbance to create 'real' weather data
+Disturbance = "sine";
+if Disturbance == "constant"
+    mg1_demand = mg1_demand + 20;
+    mg2_demand = mg2_demand + 20;
+    mg3_demand = mg3_demand + 20;
+elseif Disturbance == "sine"
+    % Sine disturbance parameters
+    amp = 10;
+    freq = 2 * pi / 24;
+    t = 0:num_hours-1;
+    sine_disturbance = amp * sin(freq * t);
+    mg1_demand = mg1_demand + sine_disturbance;
+end
+
 D_true = [mg1_demand; mg2_demand; mg3_demand];
 D_pred = 20 + D_true;
 
@@ -46,13 +61,49 @@ for i = 1:n
     x(i,1) = mgs(i).min;
 end
 
-for k = 1:num_time_steps
-    % Get optimal input from MPC controller
-    sprintf("Solving MPC time step %0d", k)
-    u(:,k) = solve_mpc(x(:,k), mpc_config, mgs, wt(:,k:k+N), pv(:,k:k+N), D_pred(:,k:k+N));
-    % Apply state update
-    x(:,k+1) = state_function(x(:,k), u(:,k), wt(:,k), pv(:,k), D_true(:,k), mgs);
+% Initialize Luenberger observers for all MGs
+dt = 1;
+omega = 2*pi/24;
+A_base = [1, 1, 0; 0, 1, dt*omega; 0, -dt*omega, 1];
+B_base = [1; 0; 0];
+C_base = [1, 0, 0];
+observer_poles = [0.7, 0.6, 0.5];
+
+xhat_aug = cell(n,1);
+xhat_log = cell(n,1);
+A_aug_all = cell(n,1);
+B_aug_all = cell(n,1);
+C_aug_all = cell(n,1);
+L_all = cell(n,1);
+
+for i = 1:n
+    A_aug_all{i} = A_base;
+    B_aug_all{i} = B_base;
+    C_aug_all{i} = C_base;
+    L_all{i} = place(A_base', C_base', observer_poles)';
+    xhat_aug{i} = [mgs(i).min; 0; 0];
+    xhat_log{i} = zeros(3, num_time_steps+1);
+    xhat_log{i}(:,1) = xhat_aug{i};
 end
+
+for k = 1:num_time_steps
+    disp(["Solving MPC time step ", num2str(k)]);
+    u(:,k) = solve_mpc(x(:,k), mpc_config, mgs, wt(:,k:k+N), pv(:,k:k+N), D_pred(:,k:k+N));
+    x(:,k+1) = state_function(x(:,k), u(:,k), wt(:,k), pv(:,k), D_true(:,k), mgs);
+
+    for i = 1:n
+        y_k = x(i,k);
+        A_aug = A_aug_all{i};
+        B_aug = B_aug_all{i};
+        C_aug = C_aug_all{i};
+        L = L_all{i};
+
+        u_idx = (i-1)*(m/n) + 1;  % Assuming charge index is first in block
+        xhat_aug{i} = A_aug * xhat_aug{i} + B_aug * u(u_idx,k) + L * (y_k - C_aug * xhat_aug{i});
+        xhat_log{i}(:,k+1) = xhat_aug{i};
+    end
+end
+
 
 function first_u = solve_mpc(state, mpc_config, mgs, wt, pv, D)
 
