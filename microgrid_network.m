@@ -34,21 +34,21 @@ demand = load_demand(2016);
 num_time_steps = 72;
 num_hours = num_time_steps + N;
 sel_month = 6;
-use_real_data = false;
+use_real_data = true;
 
 % Load energy and demand data
 if (use_real_data == true)
     [wt, pv] = get_energy_data(mgs, sel_month, 1, num_hours);
-    mg1_demand = 80.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_residential1_grid_import") + 10;
-    mg2_demand = 4.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_industrial1_grid_import") + 10;
-    mg3_demand = 10.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_public1_grid_import") + 10;
+    mg1_demand = 80.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_residential1_grid_import");
+    mg2_demand = 4.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_industrial1_grid_import");
+    mg3_demand = 10.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_public1_grid_import");
     D = [mg1_demand; mg2_demand; mg3_demand];
 else
     mg1_demand = get_const_disturbance(10, num_hours);
     mg2_demand = get_const_disturbance(20, num_hours);
     mg3_demand = get_const_disturbance(30, num_hours);
     wt = [30; 20; 10] .* ones(3, num_hours);
-    pv = [20; 10; 5] .* ones(3, num_hours);
+    pv = [20; 10; 20] .* ones(3, num_hours);
     D = [mg1_demand; mg2_demand; mg3_demand];
 end
 
@@ -71,15 +71,29 @@ for k = 1:num_time_steps
     disp(["Solving MPC time step ", num2str(k)]);
         
     dhat = xhat(n+1:end,:);
-    u(:,k) = solve_mpc(mpc_config, mgs, x(:,k), [mgs.ref], wt(:,k:k+N), pv(:,k:k+N), D(:,k:k+N), dhat);
+    [xref, uref] = ots(mgs, mpc_config, [mgs.ref]', dhat);
+    u(:,k) = solve_mpc(mpc_config, mgs, x(:,k)-xref, xref, uref, wt(:,k:k+N), pv(:,k:k+N), D(:,k:k+N));
+    
     x(:,k+1) = A * x(:,k) + B * u(:,k) + d;
     
     xhat = estimate(x(:,k+1), xhat, u(:,k), A_aug, B_aug, C_aug, L);
 end
 
-
-function control_invar_set = estimate_control_invar_set()
-
+function [xref, uref] = ots(mgs, mpc_config, yref, dhat)
+    n = mpc_config.n;
+    m = mpc_config.m;
+    % The equations simplify to the following:
+    xref = yref;
+    % -B * u = Bd * dhat
+    % This just gives us -rte * uch = dhat, so uch is -dhat/rte
+    % All the other inputs are ideally 0
+    uref = zeros(m, 1);
+    mg_offset = 0;
+    for i = 1:n
+        mg = mgs(i);
+        uref(mg_offset + mg.charge_idx) = -dhat(i)/mg.rte;
+        mg_offset = mg_offset + mg.num_mg_inputs;
+    end
 end
 
 function [A,B,C,Q,R] = get_system_matrices(n, m, mgs)
@@ -102,7 +116,7 @@ function [A,B,C,Q,R] = get_system_matrices(n, m, mgs)
 
 end
 
-function first_u = solve_mpc(mpc_config, mgs, state, xref, wt, pv, D, dhat)
+function first_u = solve_mpc(mpc_config, mgs, state, xref, uref, wt, pv, D)
 
     N = mpc_config.N;
     m = mpc_config.m;
@@ -127,7 +141,7 @@ function first_u = solve_mpc(mpc_config, mgs, state, xref, wt, pv, D, dhat)
         % Define cost function
         J = 0;
         for k = 1:N
-            J = J + (x(:,k)' - [mgs.ref])*Q*(x(:,k) - [mgs.ref]');
+            J = J + x(:,k)'*Q*x(:,k);
             % Have to do this in a loop because cvx will not accept non-PD
             % R matrix (ours is PSD but not PD)
             mg_offset = 0;
@@ -145,11 +159,11 @@ function first_u = solve_mpc(mpc_config, mgs, state, xref, wt, pv, D, dhat)
 
 
            % Initial state
-           x(:,1) == A * state + B * u(:,1) + dhat;
+           x(:,1) == A * state + B * u(:,1);
 
            % State update constraints
            for k = 1:N-1
-               x(:,k+1) == A * x(:,k) + B * u(:,k) + dhat;
+               x(:,k+1) == A * x(:,k) + B * u(:,k);
            end
 
             mg_offset = 0;
@@ -161,7 +175,7 @@ function first_u = solve_mpc(mpc_config, mgs, state, xref, wt, pv, D, dhat)
                     u_k = u(:,k);
 
                     % State constraints
-                    mg.min <= x(i,k) <= mg.max;
+                    mg.min - xref(i) <= x(i,k) <= mg.max - xref(i);
 
                     % Input constraints
                     mg.u_min <= u_k(mg_offset+1 : mg_offset+mg.num_mg_inputs) <= mg.u_max;
@@ -228,7 +242,7 @@ function first_u = solve_mpc(mpc_config, mgs, state, xref, wt, pv, D, dhat)
     cvx_end
 
     sprintf("Optimal val: %0d", J)
-    first_u = u(:,1);
+    first_u = u(:,1) + uref;  
 
 end
 
@@ -237,11 +251,11 @@ end
 close all
 
 figure(1)
-plot(100.*x(1,:)/mg1.cap,"--")
+plot(100.*x(1,:)/mg1.cap)
 hold on
-plot(100.*x(2,:)/mg2.cap,"--")
+plot(100.*x(2,:)/mg2.cap)
 hold on
-plot(100.*x(3,:)/mg3.cap,"--")
+plot(100.*x(3,:)/mg3.cap)
 legend(["MG1", "MG2", "MG3"])
 title("Battery Percent Charged (%)")
 %ylim([55 65])
