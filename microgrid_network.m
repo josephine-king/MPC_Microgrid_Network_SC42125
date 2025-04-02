@@ -1,7 +1,7 @@
 % Define parameters
 %cvx_solver Mosek
 % Control parameters
-N = 24; % Control and prediction horizon (hours)
+N = 6; % Control and prediction horizon (hours)
 dt = 1;  % Time step (hours)
 n = 3;   % Number of state variables (number of microgrids)
 m = 21;  % Number of input variables
@@ -23,7 +23,6 @@ mgs = [mg1, mg2, mg3];
 % Initialize MPC config
 [A,B,C,Q,R] = get_system_matrices(mpc_config, mgs);
 [P,K,L] = idare(A,B,Q,R);
-K = -K;
 Ak = A + B*K;
 mpc_config = get_mpc_config(n, m, N, dt, A, B, C, Q, R);
 demand = load_demand(2016);
@@ -80,7 +79,7 @@ freq = zeros(n,1);
 for k = 1:num_time_steps
     disp(["Solving MPC time step ", num2str(k)]);
     
-    u(:,k) = solve_mpc(mpc_config, mgs, x(:,k), [mgs.ref], wt(:,k:k+N), pv(:,k:k+N), D_pred(:,k:k+N), 20);
+    u(:,k) = solve_mpc(mpc_config, mgs, x(:,k), [mgs.ref], wt(:,k:k+N), pv(:,k:k+N), D_pred(:,k:k+N), 0);
     %u(:,k) = solve_mpc(x(:,k), mpc_config, mgs, wt(:,k:k+N), pv(:,k:k+N), D_pred(:,k:k+N), est_disturbance);
     x(:,k+1) = state_function(x(:,k), u(:,k), wt(:,k), pv(:,k), D_true(:,k), mgs);
 
