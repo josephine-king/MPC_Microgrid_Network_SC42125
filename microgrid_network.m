@@ -21,8 +21,13 @@ mg3 = define_microgrid(3, L, 51.93, 4.5, 400, 3, 12, 25, 2500, 0.8, 0.2, 0.8, 20
 mgs = [mg1, mg2, mg3];
 
 % Initialize MPC config
-mpc_config = get_mpc_config(n, m, N, dt);
+[A,B,C,Q,R] = get_system_matrices(mpc_config, mgs);
+[P,K,L] = idare(A,B,Q,R);
+K = -K;
+Ak = A + B*K;
+mpc_config = get_mpc_config(n, m, N, dt, A, B, C, Q, R);
 demand = load_demand(2016);
+
 
 %% Solve using our own optimization loop with CVX
 num_time_steps = 72;
@@ -94,11 +99,29 @@ for k = 1:num_time_steps
 end
 
 
-function terminal_set = estimate_terminal_set()
+function control_invar_set = estimate_control_invar_set()
 
-    rand_ics = rand(1,3);
-    ic = [mgs.min] + ([mgs.max] - [mgs.min]).*rand_ics;
+end
 
+function [A,B,C,Q,R] = get_system_matrices(mpc_config, mgs)
+    n = mpc_config.n;
+    m = mpc_config.m;
+    
+    A = eye(n);
+    B = zeros(n,m);
+    Q = zeros(n,n);
+    R = zeros(m,m);
+    C = eye(n);
+    mg_offset = 0;
+    for i = 1:n
+        B(i, mgs(i).charge_idx + mg_offset) = mgs(i).rte;
+        Q(i,i) = mgs(i).state_weight;
+        R(mg_offset + mgs(i).grid_sell_idx, mg_offset + mgs(i).grid_sell_idx) = mgs(i).grid_sell_weight;
+        R(mg_offset + mgs(i).grid_buy_idx, mg_offset + mgs(i).grid_buy_idx) = mgs(i).grid_buy_weight;
+        mg_offset = mg_offset + mgs(i).num_mg_inputs;
+    end
+    % PSD for solvers
+    R = R + 1e-6*eye(m,m);
 
 end
 
@@ -107,6 +130,11 @@ function first_u = solve_mpc(mpc_config, mgs, state, xref, wt, pv, D, dhat)
     N = mpc_config.N;
     m = mpc_config.m;
     n = mpc_config.n;
+    A = mpc_config.A;
+    B = mpc_config.B;
+    C = mpc_config.C;
+    Q = mpc_config.Q;
+    R = mpc_config.R;
 
     cvx_begin quiet
         variable u(m,N); % Control sequence
@@ -122,11 +150,14 @@ function first_u = solve_mpc(mpc_config, mgs, state, xref, wt, pv, D, dhat)
         % Define cost function
         J = 0;
         for k = 1:N
+            J = J + (x(:,k)' - [mgs.ref])*Q*(x(:,k) - [mgs.ref]');
+            % Have to do this in a loop because cvx will not accept non-PD
+            % R matrix (ours is PSD but not PD)
             mg_offset = 0;
             for i = 1:n
                 mg = mgs(i);
-                J = J + 4*(x(i,k) - xref(i))^2;
-                J = J + 0.5*u(mg.grid_buy_idx + mg_offset, k)^2 + 0.25*u(mg.grid_sell_idx + mg_offset, k)^2;
+                J = J + u(mg_offset + mg.grid_buy_idx, k)^2 * R(mg_offset + mg.grid_buy_idx,mg_offset + mg.grid_buy_idx);
+                J = J + u(mg_offset + mg.grid_sell_idx, k)^2 * R(mg_offset + mg.grid_sell_idx,mg_offset + mg.grid_sell_idx);
                 mg_offset = mg_offset + mg.num_mg_inputs;
             end
         end
@@ -135,18 +166,19 @@ function first_u = solve_mpc(mpc_config, mgs, state, xref, wt, pv, D, dhat)
         % Constraints
         subject to 
 
+
+           % Initial state
+           x(:,1) == A * state + B * u(:,1) + dhat;
+
+           % State update constraints
+           for k = 1:N-1
+               x(:,k+1) == A * x(:,k) + B * u(:,k) + dhat;
+           end
+
             mg_offset = 0;
             % State constraints     
             for i = 1:n
                 mg = mgs(i);
-
-                % Initial state
-                x(i,1) == state(i) + mg.rte*u(mg.charge_idx + mg_offset, 1) + dhat;
-
-                % State update constraints
-                for k = 1:N-1
-                    x(i,k+1) == x(i,k) + mg.rte*u(mg.charge_idx + mg_offset, k) + dhat;
-                end
 
                 for k = 1:N
                     u_k = u(:,k);
@@ -385,8 +417,8 @@ function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, v
     mg.max_power_bal = mg.num_connections * mg.max_mg_sell + mg.max_grid_sell + mg.max_charge;
     mg.min_power_bal = -(mg.num_connections * mg.max_mg_buy + mg.max_grid_buy) + mg.min_charge;
 
-    mg.u_max = [mg.max_charge; mg.max_grid_sell; mg.max_mg_sell; mg.max_mg_sell; mg.max_grid_buy; mg.max_mg_buy; mg.max_mg_buy]
-    mg.u_min = [mg.min_charge; 0; 0; 0; 0; 0; 0;]
+    mg.u_max = [mg.max_charge; mg.max_grid_sell; mg.max_mg_sell; mg.max_mg_sell; mg.max_grid_buy; mg.max_mg_buy; mg.max_mg_buy];
+    mg.u_min = [mg.min_charge; 0; 0; 0; 0; 0; 0];
 
     % Input indices 
     mg.charge_idx = 1;
@@ -398,13 +430,23 @@ function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, v
     mg.mg_buy_idx_end = mg.mg_buy_idx_start + mg.num_connections - 1;
     mg.num_mg_inputs = mg.mg_buy_idx_end;
 
+    % Cost function parameters
+    mg.state_weight = 4;
+    mg.grid_buy_weight = 0.5;
+    mg.grid_sell_weight = 0.25;
+
 end
 
-function mpc_config = get_mpc_config(n, m, N, dt)
+function mpc_config = get_mpc_config(n, m, N, dt, A, B, C, Q, R)
     mpc_config.n = n;
     mpc_config.m = m;
     mpc_config.N = N;
     mpc_config.dt = dt;
+    mpc_config.A = A;
+    mpc_config.B = B;
+    mpc_config.C = C;
+    mpc_config.Q = Q;
+    mpc_config.R = R;
 end
 
 function [beta_params, weibull_params] = load_params(latitudes, longitudes)
