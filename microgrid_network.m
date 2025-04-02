@@ -1,7 +1,7 @@
 % Define parameters
 %cvx_solver Mosek
 % Control parameters
-N = 6; % Control and prediction horizon (hours)
+N = 24; % Control and prediction horizon (hours)
 dt = 1;  % Time step (hours)
 n = 3;   % Number of state variables (number of microgrids)
 m = 21;  % Number of input variables
@@ -36,12 +36,13 @@ mg2_demand = 4.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours,
 mg3_demand = 10.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_public1_grid_import") + 10;
 D_pred = [mg1_demand; mg2_demand; mg3_demand];
 
-amp = 10;
-freq = 2 * pi / 24;
-mg1_disturbance = get_sine_disturbance(amp, freq, 0, num_hours);
-mg2_disturbance = get_sine_disturbance(-amp, freq, 0, num_hours);
-mg3_disturbance = get_sine_disturbance(1.5*amp, freq, 0, num_hours);
-D_true = [mg1_demand + mg1_disturbance; mg2_demand + mg2_disturbance; mg3_demand + mg3_disturbance];
+% amp = 10;
+% freq = 2 * pi / 24;
+% mg1_disturbance = get_sine_disturbance(amp, freq, 0, num_hours);
+% mg2_disturbance = get_sine_disturbance(-amp, freq, 0, num_hours);
+% mg3_disturbance = get_sine_disturbance(1.5*amp, freq, 0, num_hours);
+% D_true = [mg1_demand + mg1_disturbance; mg2_demand + mg2_disturbance; mg3_demand + mg3_disturbance];
+D_true = D_pred - 20;
 
 % Initialize observer
 xhat_aug = cell(n,1);
@@ -74,12 +75,8 @@ freq = zeros(n,1);
 for k = 1:num_time_steps
     disp(["Solving MPC time step ", num2str(k)]);
     
-    est_disturbance = zeros(n,N);
-    for i = 1:n
-        est_disturbance(i,:) = A(i)*sin(freq(i)*((1:N)+k));
-    end
-    
-    u(:,k) = solve_mpc(x(:,k), mpc_config, mgs, wt(:,k:k+N), pv(:,k:k+N), D_pred(:,k:k+N), est_disturbance);
+    u(:,k) = solve_mpc(mpc_config, mgs, x(:,k), [mgs.ref], wt(:,k:k+N), pv(:,k:k+N), D_pred(:,k:k+N), 20);
+    %u(:,k) = solve_mpc(x(:,k), mpc_config, mgs, wt(:,k:k+N), pv(:,k:k+N), D_pred(:,k:k+N), est_disturbance);
     x(:,k+1) = state_function(x(:,k), u(:,k), wt(:,k), pv(:,k), D_true(:,k), mgs);
 
     for i = 1:n
@@ -93,27 +90,23 @@ for k = 1:num_time_steps
         xhat_aug{i} = A_aug * xhat_aug{i} + B_aug * u(u_idx,k) + L * (y_k - C_aug * xhat_aug{i});
         xhat_log{i}(:,k+1) = xhat_aug{i};
 
-        % Estimate amplitude and frequency
-        A(i) = sqrt(xhat_aug{i}(2)^2 + xhat_aug{i}(3)^2);
-        freq(i) = atan2(xhat_aug{i}(3) - xhat_log{i}(3,k), xhat_aug{i}(2) - xhat_log{i}(2,k));
     end
 end
 
 
-function first_u = solve_mpc(state, mpc_config, mgs, wt, pv, D, est_disturbance)
+function terminal_set = estimate_terminal_set()
+
+    rand_ics = rand(1,3);
+    ic = [mgs.min] + ([mgs.max] - [mgs.min]).*rand_ics;
+
+
+end
+
+function first_u = solve_mpc(mpc_config, mgs, state, xref, wt, pv, D, dhat)
 
     N = mpc_config.N;
     m = mpc_config.m;
     n = mpc_config.n;
-
-    charge_idx = 1;
-    grid_sell_idx = 2;
-    mg_sell_idx_start = 3;
-    mg_sell_idx_end = 4;
-    grid_buy_idx = 5;
-    mg_buy_idx_start = 6;
-    mg_buy_idx_end = 7;
-    num_mg_inputs = 7;
 
     cvx_begin quiet
         variable u(m,N); % Control sequence
@@ -132,7 +125,7 @@ function first_u = solve_mpc(state, mpc_config, mgs, wt, pv, D, est_disturbance)
             mg_offset = 0;
             for i = 1:n
                 mg = mgs(i);
-                J = J + 4*(x(i,k) - mg.ref)^2;
+                J = J + 4*(x(i,k) - xref(i))^2;
                 J = J + 0.5*u(mg.grid_buy_idx + mg_offset, k)^2 + 0.25*u(mg.grid_sell_idx + mg_offset, k)^2;
                 mg_offset = mg_offset + mg.num_mg_inputs;
             end
@@ -148,11 +141,11 @@ function first_u = solve_mpc(state, mpc_config, mgs, wt, pv, D, est_disturbance)
                 mg = mgs(i);
 
                 % Initial state
-                x(i,1) == state(i);
+                x(i,1) == state(i) + mg.rte*u(mg.charge_idx + mg_offset, 1) + dhat;
 
                 % State update constraints
                 for k = 1:N-1
-                    x(i,k+1) == x(i,k) + mg.rte*u(mg.charge_idx + mg_offset, k) + est_disturbance(i,k);
+                    x(i,k+1) == x(i,k) + mg.rte*u(mg.charge_idx + mg_offset, k) + dhat;
                 end
 
                 for k = 1:N
@@ -162,15 +155,7 @@ function first_u = solve_mpc(state, mpc_config, mgs, wt, pv, D, est_disturbance)
                     mg.min <= x(i,k) <= mg.max;
 
                     % Input constraints
-                    % Constraints on charging and discharging
-                    mg.min_charge <= u_k(mg.charge_idx + mg_offset) <= mg.max_charge;
-                    % Constraints on selling and buying 
-                    0 <= u_k(mg.grid_sell_idx + mg_offset) <= mg.max_grid_sell;
-                    0 <= u_k(mg.grid_buy_idx + mg_offset) <= mg.max_grid_buy;
-                    for j = 1:mg.num_connections
-                        0 <= u_k(mg.mg_sell_idx_start + mg_offset + j - 1) <= mg.max_mg_sell;
-                        0 <= u_k(mg.mg_buy_idx_start + mg_offset + j - 1) <= mg.max_mg_buy;
-                    end
+                    mg.u_min <= u_k(mg_offset+1 : mg_offset+mg.num_mg_inputs) <= mg.u_max;
 
                     % Energy balance constraints 
                     % Left side of equation 
@@ -234,7 +219,6 @@ function first_u = solve_mpc(state, mpc_config, mgs, wt, pv, D, est_disturbance)
     cvx_end
 
     sprintf("Optimal val: %0d", J)
-    % Get first control input
     first_u = u(:,1);
 
 end
@@ -348,17 +332,6 @@ plot(u(5,:)+u(6,:)+u(7,:))
 title("MG1 total power bought and sold")
 legend(["Sold", "Bought"])
 
-figure(9)
-plot(sqrt(xhat_log{1}(2,:).^2 + xhat_log{1}(3,:).^2))
-%hold on
-%plot(xhat_log{1}(3,:))
-hold on
-plot(mg1_disturbance)
-
-figure(10)
-plot(est_disturbance(1,:))
-hold on
-plot(mg1_disturbance)
 
 
 %% Functions
@@ -407,10 +380,13 @@ function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, v
     mg.max_grid_sell = 500;
     mg.max_mg_buy = 300;
     mg.max_mg_sell = 300;
-    mg.max_charge = 600;
+    mg.max_charge = 600; % Tesla megapack
     mg.min_charge = -600;
     mg.max_power_bal = mg.num_connections * mg.max_mg_sell + mg.max_grid_sell + mg.max_charge;
     mg.min_power_bal = -(mg.num_connections * mg.max_mg_buy + mg.max_grid_buy) + mg.min_charge;
+
+    mg.u_max = [mg.max_charge; mg.max_grid_sell; mg.max_mg_sell; mg.max_mg_sell; mg.max_grid_buy; mg.max_mg_buy; mg.max_mg_buy]
+    mg.u_min = [mg.min_charge; 0; 0; 0; 0; 0; 0;]
 
     % Input indices 
     mg.charge_idx = 1;
