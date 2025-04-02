@@ -23,10 +23,11 @@ mgs = [mg1, mg2, mg3];
 % Initialize MPC config
 [A,B,C,Q,R] = get_system_matrices(mpc_config, mgs);
 [P,K,L] = idare(A,B,Q,R);
-Ak = A + B*K;
+Ak = A - B*K;
 mpc_config = get_mpc_config(n, m, N, dt, A, B, C, Q, R);
 demand = load_demand(2016);
 
+estimate_control_invar_set(Ak, B, [mg1.min mg2.min mg3.min], [mg1.max mg2.max mg3.max], [mg1.u_min mg2.u_min mg3.u_min], [mg1.u_max mg2.u_max mg3.u_max])
 
 %% Solve using our own optimization loop with CVX
 num_time_steps = 72;
@@ -98,8 +99,15 @@ for k = 1:num_time_steps
 end
 
 
-function control_invar_set = estimate_control_invar_set()
-
+function control_invar_set = estimate_control_invar_set(A, B, xmin, xmax, umin, umax)
+    % computes a control invariant set for LTI system x^+ = A*x+B*u
+    system = LTISystem('A', A, 'B', B);
+    system.x.min = xmin;
+    system.x.max = xmax;
+    system.u.min = umin;
+    system.u.max = umax;
+    InvSet = system.invariantSet();
+    InvSet.plot()
 end
 
 function [A,B,C,Q,R] = get_system_matrices(mpc_config, mgs)
