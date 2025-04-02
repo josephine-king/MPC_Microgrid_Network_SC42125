@@ -6,6 +6,7 @@ dt = 1;  % Time step (hours)
 n = 3;   % Number of state variables (number of microgrids)
 m = 21;  % Number of input variables
 dt = 1;  % Time step in hours
+nd = 3;  % Number of disturbances
 % Microgrid network topology 
 L = ones(n, n) - eye(n, n); % Links between microgrids
 % General microgrid parameters 
@@ -21,10 +22,11 @@ mg3 = define_microgrid(3, L, 51.93, 4.5, 400, 3, 12, 25, 2500, 0.8, 0.2, 0.8, 20
 mgs = [mg1, mg2, mg3];
 
 % Initialize MPC config
-[A,B,C,Q,R] = get_system_matrices(mpc_config, mgs);
+[A,B,C,Q,R] = get_system_matrices(n, m, mgs);
+mpc_config = get_mpc_config(n, m, N, dt, A, B, C, Q, R);
 [P,K,L] = idare(A,B,Q,R);
 Ak = A + B*K;
-mpc_config = get_mpc_config(n, m, N, dt, A, B, C, Q, R);
+
 demand = load_demand(2016);
 
 
@@ -32,39 +34,22 @@ demand = load_demand(2016);
 num_time_steps = 72;
 num_hours = num_time_steps + N;
 sel_month = 6;
+use_real_data = false;
 
 % Load energy and demand data
-[wt, pv] = get_energy_data(mgs, sel_month, 1, num_hours);
-mg1_demand = 80.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_residential1_grid_import") + 10;
-mg2_demand = 4.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_industrial1_grid_import") + 10;
-mg3_demand = 10.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_public1_grid_import") + 10;
-D_pred = [mg1_demand; mg2_demand; mg3_demand];
-
-% amp = 10;
-% freq = 2 * pi / 24;
-% mg1_disturbance = get_sine_disturbance(amp, freq, 0, num_hours);
-% mg2_disturbance = get_sine_disturbance(-amp, freq, 0, num_hours);
-% mg3_disturbance = get_sine_disturbance(1.5*amp, freq, 0, num_hours);
-% D_true = [mg1_demand + mg1_disturbance; mg2_demand + mg2_disturbance; mg3_demand + mg3_disturbance];
-D_true = D_pred - 20;
-
-% Initialize observer
-xhat_aug = cell(n,1);
-xhat_log = cell(n,1);
-[A_base, B_base, C_base, L] = init_observer(1, 2*pi/24, [0.7, 0.6, 0.5]);
-A_aug_all = cell(n,1);
-B_aug_all = cell(n,1);
-C_aug_all = cell(n,1);
-L_all = cell(n,1);
-dhat = cell(n,1);
-for i = 1:n
-    A_aug_all{i} = A_base;
-    B_aug_all{i} = B_base;
-    C_aug_all{i} = C_base;
-    L_all{i} = L;
-    xhat_aug{i} = [mgs(i).min; 0; 0];
-    xhat_log{i} = zeros(3, num_time_steps+1);
-    xhat_log{i}(:,1) = xhat_aug{i};
+if (use_real_data == true)
+    [wt, pv] = get_energy_data(mgs, sel_month, 1, num_hours);
+    mg1_demand = 80.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_residential1_grid_import") + 10;
+    mg2_demand = 4.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_industrial1_grid_import") + 10;
+    mg3_demand = 10.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_public1_grid_import") + 10;
+    D = [mg1_demand; mg2_demand; mg3_demand];
+else
+    mg1_demand = get_const_disturbance(10, num_hours);
+    mg2_demand = get_const_disturbance(20, num_hours);
+    mg3_demand = get_const_disturbance(30, num_hours);
+    wt = [30; 20; 10] .* ones(3, num_hours);
+    pv = [20; 10; 5] .* ones(3, num_hours);
+    D = [mg1_demand; mg2_demand; mg3_demand];
 end
 
 % Initialize state and inputs
@@ -74,27 +59,22 @@ for i = 1:n
     x(i,1) = mgs(i).min;
 end
 
-A = zeros(n,1);
-freq = zeros(n,1);
+% Initialize observer
+[A_aug, B_aug, C_aug, L] = init_observer(A, B, C, eye(n), zeros(n,n), [.95, .95, .95, .7, .7, .7]'); 
+xhat = zeros(n + nd,1);
+xhat(1:n,:) = x(:,1);
+
+% Initialize disturbance
+d = [10; 10; 10];
+
 for k = 1:num_time_steps
     disp(["Solving MPC time step ", num2str(k)]);
+        
+    dhat = xhat(n+1:end,:);
+    u(:,k) = solve_mpc(mpc_config, mgs, x(:,k), [mgs.ref], wt(:,k:k+N), pv(:,k:k+N), D(:,k:k+N), dhat);
+    x(:,k+1) = A * x(:,k) + B * u(:,k) + d;
     
-    u(:,k) = solve_mpc(mpc_config, mgs, x(:,k), [mgs.ref], wt(:,k:k+N), pv(:,k:k+N), D_pred(:,k:k+N), 0);
-    %u(:,k) = solve_mpc(x(:,k), mpc_config, mgs, wt(:,k:k+N), pv(:,k:k+N), D_pred(:,k:k+N), est_disturbance);
-    x(:,k+1) = state_function(x(:,k), u(:,k), wt(:,k), pv(:,k), D_true(:,k), mgs);
-
-    for i = 1:n
-        y_k = x(i,k);
-        A_aug = A_aug_all{i};
-        B_aug = B_aug_all{i};
-        C_aug = C_aug_all{i};
-        L = L_all{i};
-
-        u_idx = (i-1)*(m/n) + 1;  % Assuming charge index is first in block
-        xhat_aug{i} = A_aug * xhat_aug{i} + B_aug * u(u_idx,k) + L * (y_k - C_aug * xhat_aug{i});
-        xhat_log{i}(:,k+1) = xhat_aug{i};
-
-    end
+    xhat = estimate(x(:,k+1), xhat, u(:,k), A_aug, B_aug, C_aug, L);
 end
 
 
@@ -102,16 +82,14 @@ function control_invar_set = estimate_control_invar_set()
 
 end
 
-function [A,B,C,Q,R] = get_system_matrices(mpc_config, mgs)
-    n = mpc_config.n;
-    m = mpc_config.m;
-    
+function [A,B,C,Q,R] = get_system_matrices(n, m, mgs)
     A = eye(n);
     B = zeros(n,m);
     Q = zeros(n,n);
     R = zeros(m,m);
     C = eye(n);
     mg_offset = 0;
+
     for i = 1:n
         B(i, mgs(i).charge_idx + mg_offset) = mgs(i).rte;
         Q(i,i) = mgs(i).state_weight;
@@ -329,28 +307,28 @@ ylabel("Power purchased (kW)")
 xlabel("Time step (hour)")
 
 figure(6)
-plot(D_true(1,:))
+plot(D(1,:))
 hold on
-plot(D_true(2,:))
+plot(D(2,:))
 hold on
-plot(D_true(3,:))
+plot(D(3,:))
 hold on 
-plot(D_pred(1,:), '--')
+plot(D(1,:), '--')
 hold on
-plot(D_pred(2,:), '--')
+plot(D(2,:), '--')
 hold on
-plot(D_pred(3,:), '--')
+plot(D(3,:), '--')
 legend(["MG1", "MG2", "MG3", "MG1 Pred", "MG2 Pred", "MG3 Pred"])
 title("Power demand")
 ylabel("Power demand (kW)")
 xlabel("Time step (hour)")
 
 figure(7)
-plot(wt(1,:) + pv(1,:) - D_true(1,:))
+plot(wt(1,:) + pv(1,:) - D(1,:))
 hold on
-plot(wt(2,:) + pv(2,:) - D_true(2,:))
+plot(wt(2,:) + pv(2,:) - D(2,:))
 hold on
-plot(wt(3,:) + pv(3,:) - D_true(3,:))
+plot(wt(3,:) + pv(3,:) - D(3,:))
 legend(["MG1", "MG2", "MG3"])
 title("Power balance")
 ylabel("Power balance (kW)")
@@ -541,9 +519,15 @@ function disturbance = get_const_disturbance(val, num_hours)
 end
 
 % Initialize Luenberger observers for all MGs
-function [A_base, B_base, C_base, L] = init_observer(dt, omega, poles) 
-    A_base = [1, 1, 0; 0, 1, dt*omega; 0, -dt*omega, 1];
-    B_base = [1; 0; 0];
-    C_base = [1, 0, 0];
-    L = place(A_base', C_base', poles)';
+function [A_aug, B_aug, C_aug, L] = init_observer(A, B, C, Bd, Cd, poles) 
+    n = size(A, 1);
+    m = size(B, 2);
+    A_aug = [A, Bd; zeros(n,n), C];
+    B_aug = [B; zeros(n,m)];
+    C_aug = [C, Cd];
+    L = place(A_aug', C_aug', poles)';
+end
+
+function xhat_new = estimate(y, xhat, u, A_aug, B_aug, C_aug, L)
+    xhat_new = A_aug * xhat + B_aug * u + L * (y - C_aug * xhat);
 end
