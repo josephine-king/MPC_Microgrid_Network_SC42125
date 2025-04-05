@@ -10,21 +10,21 @@ nd = 3;  % Number of disturbances
 % Microgrid network topology 
 L = ones(n, n) - eye(n, n); % Links between microgrids
 % General microgrid parameters 
-rte = 0.9; % Round trip efficiency 
+rte = sqrt(0.87); % Round trip efficiency, square root because we only look at one direction (charge or discharge)
 
 % Initialize microgrids
 % Solar only, residential
-mg1 = define_microgrid(1, L, 51.93, 4.5, 0, 3, 12, 25, 5000, 0.8, 0.2, 0.8, 2000, rte); % Solar only 
+mg1 = define_microgrid(1, L, 51.93, 4.5, 0, 3, 12, 25, 6000, 0.7, 0.2, 2000, rte); % Solar only 
 % Wind only, industrial
-mg2 = define_microgrid(2, L, 51.93, 4.5, 800, 3, 12, 25, 0, 0.8, 0.2, 0.8, 2000, rte);  % Wind only 
+mg2 = define_microgrid(2, L, 51.93, 4.5, 800, 3, 12, 25, 0, 0.7, 0.2, 2000, rte);  % Wind only 
 % Wind + solar - "public"
-mg3 = define_microgrid(3, L, 51.93, 4.5, 400, 3, 12, 25, 2500, 0.8, 0.2, 0.8, 2000, rte); % Hybrid
+mg3 = define_microgrid(3, L, 51.93, 4.5, 400, 3, 12, 25, 3000, 0.7, 0.2, 2000, rte); % Hybrid
 mgs = [mg1, mg2, mg3];
 
 % Initialize MPC config
 [A,B,C,Q,R] = get_system_matrices(n, m, mgs);
-mpc_config = get_mpc_config(n, m, N, dt, A, B, C, Q, R);
 [P,K,L] = idare(A,B,Q,R);
+mpc_config = get_mpc_config(n, m, N, dt, A, B, C, Q, R, P);
 Ak = A + B*K;
 
 demand = load_demand(2016);
@@ -39,8 +39,9 @@ use_real_data = true;
 % Load energy and demand data
 if (use_real_data == true)
     [wt, pv] = get_energy_data(mgs, sel_month, 1, num_hours);
-    mg1_demand = 80.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_residential1_grid_import");
-    mg2_demand = 4.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_industrial1_grid_import");
+    mg1_demand = 40.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_residential1_grid_import");
+    mg1_demand = mg1_demand + 40.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_residential2_grid_import");
+    mg2_demand = 3.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_industrial1_grid_import");
     mg3_demand = 10.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_public1_grid_import");
     D = [mg1_demand; mg2_demand; mg3_demand];
 else
@@ -61,8 +62,8 @@ end
 
 % Initialize observer
 [A_aug, B_aug, C_aug, L] = init_observer(A, B, C, eye(n), zeros(n,n), [.95, .95, .95, .7, .7, .7]'); 
-xhat = zeros(n + nd,1);
-xhat(1:n,:) = x(:,1);
+xhat_aug = zeros(n + nd,1);
+xhat_aug(1:n,:) = x(:,1);
 
 % Initialize disturbance
 d = [10; 10; 10];
@@ -70,13 +71,14 @@ d = [10; 10; 10];
 for k = 1:num_time_steps
     disp(["Solving MPC time step ", num2str(k)]);
         
-    dhat = xhat(n+1:end,:);
+    dhat = xhat_aug(n+1:end,:);
+    xhat = xhat_aug(1:n,:);
     [xref, uref] = ots(mgs, mpc_config, [mgs.ref]', dhat);
-    u(:,k) = solve_mpc(mpc_config, mgs, x(:,k)-xref, xref, uref, wt(:,k:k+N), pv(:,k:k+N), D(:,k:k+N));
+    u(:,k) = solve_mpc(mpc_config, mgs, xhat-xref, xref, uref, wt(:,k:k+N), pv(:,k:k+N), D(:,k:k+N));
     
     x(:,k+1) = A * x(:,k) + B * u(:,k) + d;
     
-    xhat = estimate(x(:,k+1), xhat, u(:,k), A_aug, B_aug, C_aug, L);
+    xhat_aug = estimate(x(:,k+1), xhat_aug, u(:,k), A_aug, B_aug, C_aug, L);
 end
 
 function [xref, uref] = ots(mgs, mpc_config, yref, dhat)
@@ -116,16 +118,17 @@ function [A,B,C,Q,R] = get_system_matrices(n, m, mgs)
 
 end
 
-function first_u = solve_mpc(mpc_config, mgs, state, xref, uref, wt, pv, D)
+function first_u = solve_mpc(cfg, mgs, state, xref, uref, wt, pv, D)
 
-    N = mpc_config.N;
-    m = mpc_config.m;
-    n = mpc_config.n;
-    A = mpc_config.A;
-    B = mpc_config.B;
-    C = mpc_config.C;
-    Q = mpc_config.Q;
-    R = mpc_config.R;
+    N = cfg.N;
+    m = cfg.m;
+    n = cfg.n;
+    A = cfg.A;
+    B = cfg.B;
+    C = cfg.C;
+    Q = cfg.Q;
+    R = cfg.R;
+    P = cfg.P;
 
     cvx_begin quiet
         variable u(m,N); % Control sequence
@@ -139,7 +142,9 @@ function first_u = solve_mpc(mpc_config, mgs, state, xref, uref, wt, pv, D)
         expression ubal_rhs(n, N)
 
         % Define cost function
-        J = 0;
+        % Terminal cost
+        J = 0.5*x(:,N)'*P*x(:,N);
+        % Stage cost
         for k = 1:N
             J = J + x(:,k)'*Q*x(:,k);
             % Have to do this in a loop because cvx will not accept non-PD
@@ -248,6 +253,7 @@ end
 
 %% Plotting
 
+
 close all
 
 figure(1)
@@ -325,17 +331,13 @@ plot(D(1,:))
 hold on
 plot(D(2,:))
 hold on
-plot(D(3,:))
-hold on 
-plot(D(1,:), '--')
-hold on
-plot(D(2,:), '--')
-hold on
-plot(D(3,:), '--')
-legend(["MG1", "MG2", "MG3", "MG1 Pred", "MG2 Pred", "MG3 Pred"])
-title("Power demand")
+plot(D(3,:),'Color',[0.3,0.8,0.3])
+legend(["MG1", "MG2", "MG3", "MG1 Pred"])
+title("Power demand, October 15-17 2016")
 ylabel("Power demand (kW)")
 xlabel("Time step (hour)")
+fontsize(16,"points")
+
 
 figure(7)
 plot(wt(1,:) + pv(1,:) - D(1,:))
@@ -374,7 +376,7 @@ function next_x = state_function(x, u, wt, pv, D, mgs)
 end
 
 % Create a microgrid struct with the given parameters
-function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, vr, vf, Spv, Pf, epv, epc, cap, rte)
+function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, vr, vf, Spv, Pf, eff, cap, rte)
     
     % Connections
     mg.num_connections = sum(adj_matrix(index,:));
@@ -389,8 +391,7 @@ function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, v
     mg.vf = vf;               % Cut-out speed (25 m/s)
     mg.Spv = Spv;             % Solar cell area (m^2) (500 - 800 m^2 for microgrids)
     mg.Pf = Pf;               % Packing factor (30 - 50%)
-    mg.epv = epv;             % Module reference efficiency (10 - 23% depending on the type of panel)
-    mg.epc = epc;             % Power conditioning efficiency (need to figure this out, just put 1 for now)
+    mg.eff = eff;             % Module efficiency (10 - 23% depending on the type of panel)
     mg.cap = cap;             % Storage capacity, in kWh
     mg.rte = rte;             % Round trip efficiency
 
@@ -428,7 +429,7 @@ function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, v
 
 end
 
-function mpc_config = get_mpc_config(n, m, N, dt, A, B, C, Q, R)
+function mpc_config = get_mpc_config(n, m, N, dt, A, B, C, Q, R, P)
     mpc_config.n = n;
     mpc_config.m = m;
     mpc_config.N = N;
@@ -438,6 +439,7 @@ function mpc_config = get_mpc_config(n, m, N, dt, A, B, C, Q, R)
     mpc_config.C = C;
     mpc_config.Q = Q;
     mpc_config.R = R;
+    mpc_config.P = P;
 end
 
 function [beta_params, weibull_params] = load_params(latitudes, longitudes)
@@ -513,7 +515,7 @@ function [wt, pv] = get_energy_data(mgs, month, start_hour, num_hours)
             wp(v >= mg.vr & v <= mg.vf) = mg.Pr;
         
             % Solar power function
-            sp = mg.Pf*mg.Spv*mg.epc*mg.epv.*i;
+            sp = mg.Pf*mg.Spv*mg.eff.*i;
             
             wt(m, hour) = trapz(v, wp .* wbl_pdf);
             pv(m, hour) = trapz(i, sp .* beta_pdf);
