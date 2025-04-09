@@ -4,9 +4,6 @@ data = load(filename);
 
 data2 = load('cf2_oct.mat');
 
-data3 = load('cf3_oct.mat');
-data4 = load('non_coop_oct.mat');
-
 % Access variables from the loaded file
 % Example: if the file contains a variable called 'x'
 x = data.x;
@@ -14,12 +11,6 @@ u = data.u;
 
 x2 = data2.x;
 u2 = data2.u;
-
-x3 = data3.x;
-u3 = data3.u;
-
-x4 = data4.x;
-u4 = data4.u;
 
 battery_size = 2000;
 
@@ -105,14 +96,6 @@ mg3bar = sum(u(16, :)) + sum(u(19,:));
 mg1bar2 = sum(u2(2,:)) + sum(u2(5,:));
 mg2bar2 = sum(u2(9, :)) + sum(u2(12,:));
 mg3bar2 = sum(u2(16, :)) + sum(u2(19,:));
-
-mg1bar3 = sum(u3(2,:)) + sum(u3(5,:));
-mg2bar3 = sum(u3(9, :)) + sum(u3(12,:));
-mg3bar3 = sum(u3(16, :)) + sum(u3(19,:));
-
-mg1bar4 = sum(u4(2,:)) + sum(u4(5,:));
-mg2bar4 = sum(u4(9, :)) + sum(u4(12,:));
-mg3bar4 = sum(u4(16, :)) + sum(u4(19,:));
 
 bargraph = [mg1bar mg1bar2 mg1bar3 mg1bar4; mg2bar mg2bar2 mg2bar3 mg2bar4; mg3bar mg3bar2 mg3bar3 mg3bar4];
 bar(bargraph)
