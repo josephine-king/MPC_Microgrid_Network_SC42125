@@ -1,7 +1,7 @@
 % Define parameters
 %cvx_solver Mosek
 % Control parameters
-N = 6; % Control and prediction horizon (hours)
+N = 24; % Control and prediction horizon (hours)
 dt = 1;  % Time step (hours)
 n = 3;   % Number of state variables (number of microgrids)
 m = 21;  % Number of input variables
@@ -25,7 +25,7 @@ mgs = [mg1, mg2, mg3];
 [A,B,C,Q,R] = get_system_matrices(n, m, mgs);
 [P,K,L] = idare(A,B,Q,R);
 mpc_config = get_mpc_config(n, m, N, dt, A, B, C, Q, R, P);
-Ak = A + B*K;
+%Ak = A + B*K;
 
 demand = load_demand(2016);
 
@@ -66,13 +66,14 @@ xhat_aug = zeros(n + nd,1);
 xhat_aug(1:n,:) = x(:,1);
 
 % Initialize disturbance
-d = [10; 10; 10];
+d = [0; 0; 0];
 
 for k = 1:num_time_steps
     disp(["Solving MPC time step ", num2str(k)]);
         
     dhat = xhat_aug(n+1:end,:);
     xhat = xhat_aug(1:n,:);
+    dhat = zeros(n,1);
     [xref, uref] = ots(mgs, mpc_config, [mgs.ref]', dhat);
     u(:,k) = solve_mpc(mpc_config, mgs, xhat-xref, xref, uref, wt(:,k:k+N), pv(:,k:k+N), D(:,k:k+N));
     
@@ -143,7 +144,8 @@ function first_u = solve_mpc(cfg, mgs, state, xref, uref, wt, pv, D)
 
         % Define cost function
         % Terminal cost
-        J = 0.5*x(:,N)'*P*x(:,N);
+        %J = 0.5*x(:,N)'*P*x(:,N);
+        J = 0;
         % Stage cost
         for k = 1:N
             J = J + x(:,k)'*Q*x(:,k);
@@ -152,8 +154,8 @@ function first_u = solve_mpc(cfg, mgs, state, xref, uref, wt, pv, D)
             mg_offset = 0;
             for i = 1:n
                 mg = mgs(i);
-                J = J + u(mg_offset + mg.grid_buy_idx, k)^2 * R(mg_offset + mg.grid_buy_idx,mg_offset + mg.grid_buy_idx);
-                J = J + u(mg_offset + mg.grid_sell_idx, k)^2 * R(mg_offset + mg.grid_sell_idx,mg_offset + mg.grid_sell_idx);
+                J = J + u(mg_offset + mg.grid_buy_idx, k)^2 * R(mg_offset + mg.grid_buy_idx, mg_offset + mg.grid_buy_idx);
+                J = J + u(mg_offset + mg.grid_sell_idx, k)^2 * R(mg_offset + mg.grid_sell_idx, mg_offset + mg.grid_sell_idx);
                 mg_offset = mg_offset + mg.num_mg_inputs;
             end
         end
@@ -162,14 +164,16 @@ function first_u = solve_mpc(cfg, mgs, state, xref, uref, wt, pv, D)
         % Constraints
         subject to 
 
+            % Initial state
+            x(:,1) == A * state + B * u(:,1);
 
-           % Initial state
-           x(:,1) == A * state + B * u(:,1);
+            % State update constraints
+            for k = 1:N-1
+                x(:,k+1) == A * x(:,k) + B * u(:,k);
+            end
 
-           % State update constraints
-           for k = 1:N-1
-               x(:,k+1) == A * x(:,k) + B * u(:,k);
-           end
+            % Terminal constraints 
+            x(:,N) == zeros(n,1);
 
             mg_offset = 0;
             % State constraints     
@@ -257,106 +261,94 @@ end
 close all
 
 figure(1)
-plot(100.*x(1,:)/mg1.cap)
+stairs(100.*x(1,:)/mg1.cap)
 hold on
-plot(100.*x(2,:)/mg2.cap)
+stairs(100.*x(2,:)/mg2.cap)
 hold on
-plot(100.*x(3,:)/mg3.cap)
+stairs(100.*x(3,:)/mg3.cap, 'Color',[0.4,0.7,0.3])
 legend(["MG1", "MG2", "MG3"])
-title("Battery Percent Charged (%)")
-%ylim([55 65])
+title("Battery Percent Charged")
+ylim([20 70])
 ylabel("Battery Percent Charged (%)")
 xlabel("Time step (hour)")
-
-figure(2)
-plot(u(3,:))
-hold on
-plot(u(4,:))
-hold on
-plot(u(10,:))
-hold on
-plot(u(11,:))
-hold on
-plot(u(17,:))
-hold on
-plot(u(18,:))
-hold on
-legend(["MG1 to MG2", "MG1 to MG3", "MG2 to MG1", "MG2 to MG3", "MG3 to MG1", "MG3 to MG2"])
-title("Power sold to MGs")
-ylabel("Power sold (kW)")
-xlabel("Time step (hour)")
-
-figure(3)
-plot(u(6,:))
-hold on
-plot(u(7,:))
-hold on
-plot(u(13,:))
-hold on
-plot(u(14,:))
-hold on
-plot(u(20,:))
-hold on
-plot(u(21,:))
-hold on
-legend(["MG1 to MG2", "MG1 to MG3", "MG2 to MG1", "MG2 to MG3", "MG3 to MG1", "MG3 to MG2"])
-title("Power purchased from MGs")
-ylabel("Power purchased (kW)")
-xlabel("Time step (hour)")
+fontsize(16,"points")
+grid on
 
 figure(4)
-plot(u(2,:))
+subplot(3,1,1)
+stairs(100.*x(1,:)/mg1.cap)
 hold on
-plot(u(9,:))
+stairs(100.*x(2,:)/mg2.cap)
 hold on
-plot(u(16,:))
-legend(["MG1", "MG2", "MG3"])
-title("Power sold to DNO")
-ylabel("Power sold (kW)")
-xlabel("Time step (hour)")
+stairs(100.*x(3,:)/mg3.cap, 'Color',[0.4,0.7,0.3])
+title("Battery Percent Charged")
+ylim([20 70])
+ylabel("Battery Percent Charged (%)")
+fontsize(14,"points")
+grid on
+lgd1 = legend(["MG1", "MG2", "MG3"])
+fontsize(lgd1,10,'points')
 
-figure(5)
-plot(u(5,:))
+subplot(3,1,2)
+stairs(u(2,:))
 hold on
-plot(u(12,:))
+stairs(u(9,:))
 hold on
-plot(u(19,:))
-legend(["MG1", "MG2", "MG3"])
-title("Power purchased from DNO")
-ylabel("Power purchased (kW)")
-xlabel("Time step (hour)")
+stairs(u(16,:))
+hold on
+stairs(u(5,:))
+hold on
+stairs(u(12,:))
+hold on
+stairs(u(19,:))
+title("Power exchanged with DNO")
+ylabel("Power (kW)")
+fontsize(14,"points")
+grid on
+ylim([0 400])
+lgd2 = legend(["MG1 to DNO", "MG2 to DNO", "MG3 to DNO", "DNO to MG1", "DNO to MG2", "DNO to MG3"])
+
+subplot(3,1,3)
+stairs(u(3,:))
+hold on
+stairs(u(4,:))
+hold on
+stairs(u(10,:))
+hold on
+stairs(u(11,:))
+hold on
+stairs(u(17,:))
+hold on
+stairs(u(18,:))
+hold on
+title("Power sold to MGs")
+ylabel("Power sold (kW)")
+fontsize(14,"points")
+grid on
+ylim([0 400])
+lgd3 = legend(["MG1 to MG2", "MG1 to MG3", "MG2 to MG1", "MG2 to MG3", "MG3 to MG1", "MG3 to MG2"])
+
+fontsize(lgd1,12,'points')
+fontsize(lgd2,12,'points')
+fontsize(lgd3,12,'points')
 
 figure(6)
-plot(D(1,:))
+stairs(wt(1,:) + pv(1,:) - D(1,:))
 hold on
-plot(D(2,:))
+stairs(wt(2,:) + pv(2,:) - D(2,:))
 hold on
-plot(D(3,:),'Color',[0.3,0.8,0.3])
-legend(["MG1", "MG2", "MG3", "MG1 Pred"])
-title("Power demand, October 15-17 2016")
-ylabel("Power demand (kW)")
+stairs(wt(3,:) + pv(3,:) - D(3,:), 'Color',[0.4,0.7,0.3])
+legend(["MG1", "MG2", "MG3"])
+title("Power balance, October 15-17")
+ylabel("Power balance (kW)")
 xlabel("Time step (hour)")
 fontsize(16,"points")
 
-
 figure(7)
+plot(mg1.rte*u(1,:))
+%+u(2,:)+u(3,:)+u(4,:)-u(5,:)-u(6,:)-u(7,:)
+hold on 
 plot(wt(1,:) + pv(1,:) - D(1,:))
-hold on
-plot(wt(2,:) + pv(2,:) - D(2,:))
-hold on
-plot(wt(3,:) + pv(3,:) - D(3,:))
-legend(["MG1", "MG2", "MG3"])
-title("Power balance")
-ylabel("Power balance (kW)")
-xlabel("Time step (hour)")
-
-figure(8)
-plot(u(2,:)+u(3,:)+u(4,:))
-hold on
-plot(u(5,:)+u(6,:)+u(7,:))
-title("MG1 total power bought and sold")
-legend(["Sold", "Bought"])
-
 
 
 %% Functions
@@ -402,10 +394,10 @@ function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, v
     mg.ref = 0.6*cap;
     mg.max_grid_buy = 500;
     mg.max_grid_sell = 500;
-    mg.max_mg_buy = 300;
-    mg.max_mg_sell = 300;
-    mg.max_charge = 600; % Tesla megapack
-    mg.min_charge = -600;
+    mg.max_mg_buy = 500;
+    mg.max_mg_sell = 500;
+    mg.max_charge = 1000; % Tesla megapack
+    mg.min_charge = -1000;
     mg.max_power_bal = mg.num_connections * mg.max_mg_sell + mg.max_grid_sell + mg.max_charge;
     mg.min_power_bal = -(mg.num_connections * mg.max_mg_buy + mg.max_grid_buy) + mg.min_charge;
 
@@ -423,9 +415,9 @@ function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, v
     mg.num_mg_inputs = mg.mg_buy_idx_end;
 
     % Cost function parameters
-    mg.state_weight = 4;
-    mg.grid_buy_weight = 0.5;
-    mg.grid_sell_weight = 0.25;
+    mg.state_weight = 0;
+    mg.grid_buy_weight = 1;
+    mg.grid_sell_weight = 1;
 
 end
 
