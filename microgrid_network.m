@@ -74,7 +74,7 @@ for k = 1:num_time_steps
     dhat = xhat_aug(n+1:end,:);
     xhat = xhat_aug(1:n,:);
     dhat = zeros(n,1);
-    [xref, uref] = ots(mgs, mpc_config, [mgs.ref]', dhat);
+    [xref, uref] = ots(mgs, mpc_config, [mgs.ref]', d);
     u(:,k) = solve_mpc(mpc_config, mgs, xhat-xref, xref, uref, wt(:,k:k+N), pv(:,k:k+N), D(:,k:k+N));
     
     x(:,k+1) = A * x(:,k) + B * u(:,k) + d;
