@@ -57,7 +57,7 @@ end
 x = zeros(n, num_time_steps+1);
 u = zeros(m, num_time_steps+1);
 for i = 1:n
-    x(i,1) = mgs(i).min;
+    x(i,1) = mgs(i).max/2;
 end
 
 % Initialize observer

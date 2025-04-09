@@ -1,3 +1,5 @@
+% Load data to plot different control horizons
+
 load("n1_june.mat")
 x_n1 = x;
 u_n1 = u;
