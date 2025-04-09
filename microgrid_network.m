@@ -173,7 +173,7 @@ function first_u = solve_mpc(cfg, mgs, state, xref, uref, wt, pv, D)
             end
 
             % Terminal constraints 
-            x(:,N) == zeros(n,1);
+            %x(:,N) == zeros(n,1);
 
             mg_offset = 0;
             % State constraints     
@@ -306,7 +306,7 @@ ylabel("Power (kW)")
 fontsize(14,"points")
 grid on
 ylim([0 400])
-lgd2 = legend(["MG1 to DNO", "MG2 to DNO", "MG3 to DNO", "DNO to MG1", "DNO to MG2", "DNO to MG3"])
+lgd2 = legend(["MG1 to DNO", "MG2 to DNO", "MG3 to DNO", "DNO to MG1", "DNO to MG2", "DNO to MG3"]);
 
 subplot(3,1,3)
 stairs(u(3,:))
@@ -326,7 +326,7 @@ ylabel("Power sold (kW)")
 fontsize(14,"points")
 grid on
 ylim([0 400])
-lgd3 = legend(["MG1 to MG2", "MG1 to MG3", "MG2 to MG1", "MG2 to MG3", "MG3 to MG1", "MG3 to MG2"])
+lgd3 = legend(["MG1 to MG2", "MG1 to MG3", "MG2 to MG1", "MG2 to MG3", "MG3 to MG1", "MG3 to MG2"]);
 
 fontsize(lgd1,12,'points')
 fontsize(lgd2,12,'points')
@@ -343,12 +343,6 @@ title("Power balance, October 15-17")
 ylabel("Power balance (kW)")
 xlabel("Time step (hour)")
 fontsize(16,"points")
-
-figure(7)
-plot(mg1.rte*u(1,:))
-%+u(2,:)+u(3,:)+u(4,:)-u(5,:)-u(6,:)-u(7,:)
-hold on 
-plot(wt(1,:) + pv(1,:) - D(1,:))
 
 
 %% Functions
@@ -415,8 +409,8 @@ function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, v
     mg.num_mg_inputs = mg.mg_buy_idx_end;
 
     % Cost function parameters
-    mg.state_weight = 0;
-    mg.grid_buy_weight = 1;
+    mg.state_weight = 16;
+    mg.grid_buy_weight = 2;
     mg.grid_sell_weight = 1;
 
 end
