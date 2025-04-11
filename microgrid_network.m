@@ -25,10 +25,9 @@ mgs = [mg1, mg2, mg3];
 [A,B,C,Q,R] = get_system_matrices(n, m, mgs);
 [P,K,L] = idare(A,B,Q,R);
 mpc_config = get_mpc_config(n, m, N, dt, A, B, C, Q, R, P);
-%Ak = A + B*K;
 
+% Load the demand data
 demand = load_demand(2016);
-
 
 %% Solve using our own optimization loop with CVX
 num_time_steps = 72;
@@ -57,44 +56,44 @@ end
 x = zeros(n, num_time_steps+1);
 u = zeros(m, num_time_steps+1);
 for i = 1:n
-    x(i,1) = mgs(i).max/2;
+    x(i,1) = mgs(i).min;
 end
 
 % Initialize observer
-[A_aug, B_aug, C_aug, L] = init_observer(A, B, C, eye(n), zeros(n,n), [.95, .95, .95, .7, .7, .7]'); 
-xhat_aug = zeros(n + nd,1);
-xhat_aug(1:n,:) = x(:,1);
+[A_aug, B_aug, C_aug, L] = init_observer(A, B, C, eye(n), zeros(n,n), [.8, .8, .8, .6, .6, .6]'); 
+xhat_aug = zeros(n + nd, num_time_steps);
+xhat_aug(1:n,1) = x(:,1);
 
 % Initialize disturbance
-d = [0; 0; 0];
+d = [40; 40; 40];
 
 for k = 1:num_time_steps
     disp(["Solving MPC time step ", num2str(k)]);
         
-    dhat = xhat_aug(n+1:end,:);
-    xhat = xhat_aug(1:n,:);
-    dhat = zeros(n,1);
-    [xref, uref] = ots(mgs, mpc_config, [mgs.ref]', d);
-    u(:,k) = solve_mpc(mpc_config, mgs, xhat-xref, xref, uref, wt(:,k:k+N), pv(:,k:k+N), D(:,k:k+N));
+    dhat = xhat_aug(n+1:end,k);
+    xhat = xhat_aug(1:n,k);
+    [xref, uref, power_bal_ref] = ots(mgs, mpc_config, [mgs.ref]', dhat);
+    power_bal = wt(:,k:k+N-1) + pv(:,k:k+N-1) - D(:,k:k+N-1);
+    %power_bal(:, 1) = power_bal(:, 1) - power_bal_ref;
+    xhat = x(:,k);
+    uref = zeros(m,1);
+    u(:,k) = solve_mpc(mpc_config, mgs, xhat-xref, xref, uref, power_bal);
     
     x(:,k+1) = A * x(:,k) + B * u(:,k) + d;
-    
-    xhat_aug = estimate(x(:,k+1), xhat_aug, u(:,k), A_aug, B_aug, C_aug, L);
+    xhat_aug(:,k+1) = estimate(x(:,k+1), xhat_aug(:,k), u(:,k), A_aug, B_aug, C_aug, L);
 end
 
-function [xref, uref] = ots(mgs, mpc_config, yref, dhat)
+function [xref, uref, power_bal_ref] = ots(mgs, mpc_config, yref, dhat)
     n = mpc_config.n;
     m = mpc_config.m;
-    % The equations simplify to the following:
+    R = mpc_config.R;
     xref = yref;
-    % -B * u = Bd * dhat
-    % This just gives us -rte * uch = dhat, so uch is -dhat/rte
-    % All the other inputs are ideally 0
-    uref = zeros(m, 1);
+    uref = zeros(m,1);
     mg_offset = 0;
     for i = 1:n
         mg = mgs(i);
         uref(mg_offset + mg.charge_idx) = -dhat(i)/mg.rte;
+        power_bal_ref = mg.rte*uref(mg_offset + mg.charge_idx);
         mg_offset = mg_offset + mg.num_mg_inputs;
     end
 end
@@ -119,7 +118,7 @@ function [A,B,C,Q,R] = get_system_matrices(n, m, mgs)
 
 end
 
-function first_u = solve_mpc(cfg, mgs, state, xref, uref, wt, pv, D)
+function first_u = solve_mpc(cfg, mgs, state, xref, uref, power_bal)
 
     N = cfg.N;
     m = cfg.m;
@@ -143,8 +142,6 @@ function first_u = solve_mpc(cfg, mgs, state, xref, uref, wt, pv, D)
         expression ubal_rhs(n, N)
 
         % Define cost function
-        % Terminal cost
-        %J = 0.5*x(:,N)'*P*x(:,N);
         J = 0;
         % Stage cost
         for k = 1:N
@@ -173,7 +170,7 @@ function first_u = solve_mpc(cfg, mgs, state, xref, uref, wt, pv, D)
             end
 
             % Terminal constraints 
-            %x(:,N) == zeros(n,1);
+            x(:,N) == zeros(n,1);
 
             mg_offset = 0;
             % State constraints     
@@ -191,7 +188,7 @@ function first_u = solve_mpc(cfg, mgs, state, xref, uref, wt, pv, D)
 
                     % Energy balance constraints 
                     % Left side of equation 
-                    ubal_lhs(i,k) = wt(i,k) + pv(i,k) - D(i,k);
+                    ubal_lhs(i,k) = power_bal(i,k);
                     % Right side of equation
                     energy_sold = sum(u_k(mg.grid_sell_idx + mg_offset : mg.mg_sell_idx_end + mg_offset));
                     energy_bought = sum(u_k(mg.grid_buy_idx + mg_offset : mg.mg_buy_idx_end + mg_offset));
@@ -251,7 +248,7 @@ function first_u = solve_mpc(cfg, mgs, state, xref, uref, wt, pv, D)
     cvx_end
 
     sprintf("Optimal val: %0d", J)
-    first_u = u(:,1) + uref;  
+    first_u = u(:,1) + uref;
 
 end
 
@@ -286,7 +283,7 @@ ylim([20 70])
 ylabel("Battery Percent Charged (%)")
 fontsize(14,"points")
 grid on
-lgd1 = legend(["MG1", "MG2", "MG3"])
+lgd1 = legend(["MG1", "MG2", "MG3"]);
 fontsize(lgd1,10,'points')
 
 subplot(3,1,2)
@@ -339,9 +336,53 @@ stairs(wt(2,:) + pv(2,:) - D(2,:))
 hold on
 stairs(wt(3,:) + pv(3,:) - D(3,:), 'Color',[0.4,0.7,0.3])
 legend(["MG1", "MG2", "MG3"])
-title("Power balance, October 15-17")
+title("Power balance")
 ylabel("Power balance (kW)")
 xlabel("Time step (hour)")
+fontsize(16,"points")
+
+figure(7)
+subplot(3,1,1)
+stairs(100.*x(1,:)/mg1.cap)
+hold on
+stairs(100.*x(2,:)/mg2.cap)
+hold on
+stairs(100.*x(3,:)/mg3.cap, 'Color',[0.4,0.7,0.3])
+title("Battery Percent Charged, No Observer or OTS")
+ylim([20 80])
+ylabel("Battery Percent Charged (%)")
+fontsize(14,"points")
+grid on
+lgd1 = legend(["MG1", "MG2", "MG3"]);
+fontsize(lgd1,10,'points')
+
+subplot(3,1,2)
+stairs(100.*x_ots(1,:)/mg1.cap)
+hold on
+stairs(100.*x_ots(2,:)/mg2.cap)
+hold on
+stairs(100.*x_ots(3,:)/mg3.cap, 'Color',[0.4,0.7,0.3])
+title("Battery Percent Charged, Observer and OTS")
+ylim([20 80])
+ylabel("Battery Percent Charged (%)")
+fontsize(14,"points")
+grid on
+lgd1 = legend(["MG1", "MG2", "MG3"]);
+fontsize(lgd1,10,'points')
+
+subplot(3,1,3)
+stairs(xhat_aug_ots(4,:))
+hold on
+stairs(xhat_aug_ots(5,:))
+hold on
+stairs(xhat_aug_ots(6,:))
+hold on
+plot(d(1).*ones(1, num_time_steps), "Color", [0.5, 0.5, 0.5])
+legend(["MG1 dhat", "MG2 dhat", "MG3 dhat", "True disturbance value"])
+title("Disturbance Estimate")
+ylabel("Disturbance Estimate (kWh)")
+xlabel("Time step (hour)")
+ylim([0,50])
 fontsize(16,"points")
 
 
