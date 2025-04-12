@@ -1,7 +1,7 @@
 %% Initialize MPC + Microgrid parameters
 
 % Control parameters
-N = 3; % Control and prediction horizon (hours)
+N = 24; % Control and prediction horizon (hours)
 dt = 1;  % Time step (hours)
 n = 3;   % Number of state variables (number of microgrids)
 m = 21;  % Number of input variables
@@ -50,7 +50,7 @@ mg3 = define_microgrid(3, L, 51.93, 4.5, 400, 3, 12, 25, 3000, 0.7, 0.2, 2000, r
 mgs = [mg1, mg2, mg3];
 
 % Initialize MPC config
-[A,B,C,Q,R] = get_system_matrices(n, m, mgs);
+[A,B,C,Q,R] = get_system_matrices(n, m, mgs, dt);
 [P,K,L] = idare(A,B,Q,R);
 mpc_config = get_mpc_config(n, m, N, dt, A, B, C, Q, R, P);
 
@@ -116,17 +116,15 @@ for k = 1:num_time_steps
 
     if (estimate_disturbance)
         dhat = xhat_aug(n+1:end,k);
-        xhat = xhat_aug(1:n,k);
         [xref, uref, power_bal_ref] = ots(mgs, mpc_config, [mgs.ref]', dhat);
         power_bal(:, 1) = power_bal(:, 1) - power_bal_ref;
     else
         xref = [mgs.ref]';
         uref = zeros(m,1);
-        xhat = x(:,k);
     end
 
     % Solve optimal control problem
-    u(:,k) = solve_mpc(mpc_config, mgs, xhat-xref, xref, uref, power_bal);
+    u(:,k) = solve_mpc(mpc_config, mgs, x(:,k)-xref, xref, uref, power_bal);
     % State update
     x(:,k+1) = A * x(:,k) + B * u(:,k) + d(:,k);
     
@@ -353,49 +351,7 @@ ylabel("Power balance (kW)")
 xlabel("Time step (hour)")
 fontsize(16,"points")
 
-figure(7)
-subplot(3,1,1)
-stairs(100.*x(1,:)/mg1.cap)
-hold on
-stairs(100.*x(2,:)/mg2.cap)
-hold on
-stairs(100.*x(3,:)/mg3.cap, 'Color',[0.4,0.7,0.3])
-title("Battery Percent Charged, No Observer or OTS")
-ylim([20 70])
-ylabel("Battery Percent Charged (%)")
-fontsize(14,"points")
-grid on
-lgd1 = legend(["MG1", "MG2", "MG3"]);
-fontsize(lgd1,10,'points')
 
-subplot(3,1,2)
-stairs(100.*x_ots(1,:)/mg1.cap)
-hold on
-stairs(100.*x_ots(2,:)/mg2.cap)
-hold on
-stairs(100.*x_ots(3,:)/mg3.cap, 'Color',[0.4,0.7,0.3])
-title("Battery Percent Charged, Observer and OTS")
-ylim([20 70])
-ylabel("Battery Percent Charged (%)")
-fontsize(14,"points")
-grid on
-lgd1 = legend(["MG1", "MG2", "MG3"]);
-fontsize(lgd1,10,'points')
-
-subplot(3,1,3)
-stairs(xhat_aug_ots(4,:))
-hold on
-stairs(xhat_aug_ots(5,:))
-hold on
-stairs(xhat_aug_ots(6,:))
-hold on
-plot(d(1,:), "Color", [0.5, 0.5, 0.5])
-legend(["MG1 dhat", "MG2 dhat", "MG3 dhat", "True disturbance value"])
-title("Disturbance Estimate")
-ylabel("Disturbance Estimate (kWh)")
-xlabel("Time step (hour)")
-ylim([-25,25])
-fontsize(16,"points")
 
 %% Initialization functions
 
@@ -467,7 +423,7 @@ function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, v
 end
 
 % Gets the system matrices 
-function [A,B,C,Q,R] = get_system_matrices(n, m, mgs)
+function [A,B,C,Q,R] = get_system_matrices(n, m, mgs, dt)
     A = eye(n);
     B = zeros(n,m);
     Q = zeros(n,n);
@@ -476,7 +432,7 @@ function [A,B,C,Q,R] = get_system_matrices(n, m, mgs)
     mg_offset = 0;
 
     for i = 1:n
-        B(i, mgs(i).charge_idx + mg_offset) = mgs(i).rte;
+        B(i, mgs(i).charge_idx + mg_offset) = dt * mgs(i).rte;
         Q(i,i) = mgs(i).state_weight;
         R(mg_offset + mgs(i).grid_sell_idx, mg_offset + mgs(i).grid_sell_idx) = mgs(i).grid_sell_weight;
         R(mg_offset + mgs(i).grid_buy_idx, mg_offset + mgs(i).grid_buy_idx) = mgs(i).grid_buy_weight;

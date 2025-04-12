@@ -74,6 +74,7 @@ fontsize(14,"points")
 grid on
 lgd4 = legend(["MG1", "MG2", "MG3"]);
 fontsize(lgd4,10,'points')
+xlabel("Time step (hours)")
 
 fontsize(lgd1,12,'points')
 fontsize(lgd2,12,'points')
