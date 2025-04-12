@@ -1,7 +1,7 @@
-% Define parameters
-%cvx_solver Mosek
+%% Initialize MPC + Microgrid parameters
+
 % Control parameters
-N = 24; % Control and prediction horizon (hours)
+N = 3; % Control and prediction horizon (hours)
 dt = 1;  % Time step (hours)
 n = 3;   % Number of state variables (number of microgrids)
 m = 21;  % Number of input variables
@@ -9,16 +9,44 @@ dt = 1;  % Time step in hours
 nd = 3;  % Number of disturbances
 % Microgrid network topology 
 L = ones(n, n) - eye(n, n); % Links between microgrids
+
 % General microgrid parameters 
 rte = sqrt(0.87); % Round trip efficiency, square root because we only look at one direction (charge or discharge)
+% Choose cost function
+cost_function = 1;
+if (cost_function == 1)
+    state_weight = 16;
+    buy_weight = 2;
+    sell_weight = 1;
+elseif (cost_function == 2)
+    state_weight = 1;
+    buy_weight = 4;
+    sell_weight = 4;
+else
+    state_weight = 0;
+    buy_weight = 1;
+    sell_weight = 1;
+end
+max_grid_buy = 500;
+max_grid_sell = 500;
+max_mg_buy = 500;
+max_mg_sell = 500;
+max_charge = 1000;
+min_charge = -1000;
 
 % Initialize microgrids
 % Solar only, residential
-mg1 = define_microgrid(1, L, 51.93, 4.5, 0, 3, 12, 25, 6000, 0.7, 0.2, 2000, rte); % Solar only 
+mg1 = define_microgrid(1, L, 51.93, 4.5, 0, 3, 12, 25, 6000, 0.7, 0.2, 2000, rte, ...
+    max_grid_buy, max_grid_sell, max_mg_buy, max_mg_sell, max_charge, min_charge, ...
+    state_weight, buy_weight, sell_weight);
 % Wind only, industrial
-mg2 = define_microgrid(2, L, 51.93, 4.5, 800, 3, 12, 25, 0, 0.7, 0.2, 2000, rte);  % Wind only 
+mg2 = define_microgrid(2, L, 51.93, 4.5, 800, 3, 12, 25, 0, 0.7, 0.2, 2000, rte, ...
+    max_grid_buy, max_grid_sell, max_mg_buy, max_mg_sell, max_charge, min_charge, ...
+    state_weight, buy_weight, sell_weight);   
 % Wind + solar - "public"
-mg3 = define_microgrid(3, L, 51.93, 4.5, 400, 3, 12, 25, 3000, 0.7, 0.2, 2000, rte); % Hybrid
+mg3 = define_microgrid(3, L, 51.93, 4.5, 400, 3, 12, 25, 3000, 0.7, 0.2, 2000, rte, ...
+    max_grid_buy, max_grid_sell, max_mg_buy, max_mg_sell, max_charge, min_charge, ...
+    state_weight, buy_weight, sell_weight); 
 mgs = [mg1, mg2, mg3];
 
 % Initialize MPC config
@@ -29,7 +57,8 @@ mpc_config = get_mpc_config(n, m, N, dt, A, B, C, Q, R, P);
 % Load the demand data
 demand = load_demand(2016);
 
-%% Solve using our own optimization loop with CVX
+%% Initialize simulation parameters
+
 num_time_steps = 72;
 num_hours = num_time_steps + N;
 sel_month = 6;
@@ -44,80 +73,69 @@ if (use_real_data == true)
     mg3_demand = 10.*get_demand_data(demand.demand_data, sel_month, 15, 1, num_hours, "DE_KN_public1_grid_import");
     D = [mg1_demand; mg2_demand; mg3_demand];
 else
-    mg1_demand = get_const_disturbance(10, num_hours);
-    mg2_demand = get_const_disturbance(20, num_hours);
-    mg3_demand = get_const_disturbance(30, num_hours);
-    wt = [30; 20; 10] .* ones(3, num_hours);
-    pv = [20; 10; 20] .* ones(3, num_hours);
-    D = [mg1_demand; mg2_demand; mg3_demand];
+    wt = zeros(n,num_hours);
+    pv = zeros(n,num_hours);
+    D = zeros(n,num_hours);
 end
 
 % Initialize state and inputs
 x = zeros(n, num_time_steps+1);
 u = zeros(m, num_time_steps+1);
-for i = 1:n
-    x(i,1) = mgs(i).min;
-end
+x(:,1) = [mgs.min]';
 
 % Initialize observer
-[A_aug, B_aug, C_aug, L] = init_observer(A, B, C, eye(n), zeros(n,n), [.8, .8, .8, .6, .6, .6]'); 
-xhat_aug = zeros(n + nd, num_time_steps);
-xhat_aug(1:n,1) = x(:,1);
+estimate_disturbance = 0;
+if (estimate_disturbance)
+    [A_aug, B_aug, C_aug, L] = init_observer(A, B, C, eye(n), zeros(n,n), [.8, .8, .8, .6, .6, .6]'); 
+    xhat_aug = zeros(n + nd, num_time_steps);
+    xhat_aug(1:n,1) = x(:,1);
+end
 
 % Initialize disturbance
-d = [40; 40; 40];
+disturbance_type = "no_disturbance";
+if (disturbance_type == "const_disturbance")
+    d1 = get_const_disturbance(40, num_time_steps);
+    d2 = get_const_disturbance(40, num_time_steps);
+    d3 = get_const_disturbance(40, num_time_steps);
+    d = [d1; d2; d3];
+elseif (disturbance_type == "ramp_disturbance")
+    d1 = get_ramp_disturbance(-20, 20, num_time_steps);
+    d2 = get_ramp_disturbance(-20, 20, num_time_steps);
+    d3 = get_ramp_disturbance(-20, 20, num_time_steps);
+    d = [d1; d2; d3];
+else
+    d = zeros(n, num_time_steps);
+    estimate_disturbance = 0;
+end 
 
+% Simulate system with MPC
 for k = 1:num_time_steps
     disp(["Solving MPC time step ", num2str(k)]);
-        
-    dhat = xhat_aug(n+1:end,k);
-    xhat = xhat_aug(1:n,k);
-    [xref, uref, power_bal_ref] = ots(mgs, mpc_config, [mgs.ref]', dhat);
+       
     power_bal = wt(:,k:k+N-1) + pv(:,k:k+N-1) - D(:,k:k+N-1);
-    %power_bal(:, 1) = power_bal(:, 1) - power_bal_ref;
-    xhat = x(:,k);
-    uref = zeros(m,1);
+
+    if (estimate_disturbance)
+        dhat = xhat_aug(n+1:end,k);
+        xhat = xhat_aug(1:n,k);
+        [xref, uref, power_bal_ref] = ots(mgs, mpc_config, [mgs.ref]', dhat);
+        power_bal(:, 1) = power_bal(:, 1) - power_bal_ref;
+    else
+        xref = [mgs.ref]';
+        uref = zeros(m,1);
+        xhat = x(:,k);
+    end
+
+    % Solve optimal control problem
     u(:,k) = solve_mpc(mpc_config, mgs, xhat-xref, xref, uref, power_bal);
+    % State update
+    x(:,k+1) = A * x(:,k) + B * u(:,k) + d(:,k);
     
-    x(:,k+1) = A * x(:,k) + B * u(:,k) + d;
-    xhat_aug(:,k+1) = estimate(x(:,k+1), xhat_aug(:,k), u(:,k), A_aug, B_aug, C_aug, L);
-end
-
-function [xref, uref, power_bal_ref] = ots(mgs, mpc_config, yref, dhat)
-    n = mpc_config.n;
-    m = mpc_config.m;
-    R = mpc_config.R;
-    xref = yref;
-    uref = zeros(m,1);
-    mg_offset = 0;
-    for i = 1:n
-        mg = mgs(i);
-        uref(mg_offset + mg.charge_idx) = -dhat(i)/mg.rte;
-        power_bal_ref = mg.rte*uref(mg_offset + mg.charge_idx);
-        mg_offset = mg_offset + mg.num_mg_inputs;
+    if (estimate_disturbance)
+        xhat_aug(:,k+1) = estimate(x(:,k+1), xhat_aug(:,k), u(:,k), A_aug, B_aug, C_aug, L);
     end
 end
 
-function [A,B,C,Q,R] = get_system_matrices(n, m, mgs)
-    A = eye(n);
-    B = zeros(n,m);
-    Q = zeros(n,n);
-    R = zeros(m,m);
-    C = eye(n);
-    mg_offset = 0;
-
-    for i = 1:n
-        B(i, mgs(i).charge_idx + mg_offset) = mgs(i).rte;
-        Q(i,i) = mgs(i).state_weight;
-        R(mg_offset + mgs(i).grid_sell_idx, mg_offset + mgs(i).grid_sell_idx) = mgs(i).grid_sell_weight;
-        R(mg_offset + mgs(i).grid_buy_idx, mg_offset + mgs(i).grid_buy_idx) = mgs(i).grid_buy_weight;
-        mg_offset = mg_offset + mgs(i).num_mg_inputs;
-    end
-    % PSD for solvers
-    R = R + 1e-6*eye(m,m);
-
-end
-
+% Solves the MPC optimal control problem 
 function first_u = solve_mpc(cfg, mgs, state, xref, uref, power_bal)
 
     N = cfg.N;
@@ -125,10 +143,8 @@ function first_u = solve_mpc(cfg, mgs, state, xref, uref, power_bal)
     n = cfg.n;
     A = cfg.A;
     B = cfg.B;
-    C = cfg.C;
     Q = cfg.Q;
     R = cfg.R;
-    P = cfg.P;
 
     cvx_begin quiet
         variable u(m,N); % Control sequence
@@ -146,14 +162,10 @@ function first_u = solve_mpc(cfg, mgs, state, xref, uref, power_bal)
         % Stage cost
         for k = 1:N
             J = J + x(:,k)'*Q*x(:,k);
-            % Have to do this in a loop because cvx will not accept non-PD
-            % R matrix (ours is PSD but not PD)
-            mg_offset = 0;
-            for i = 1:n
-                mg = mgs(i);
-                J = J + u(mg_offset + mg.grid_buy_idx, k)^2 * R(mg_offset + mg.grid_buy_idx, mg_offset + mg.grid_buy_idx);
-                J = J + u(mg_offset + mg.grid_sell_idx, k)^2 * R(mg_offset + mg.grid_sell_idx, mg_offset + mg.grid_sell_idx);
-                mg_offset = mg_offset + mg.num_mg_inputs;
+            % Have to do this in a loop, cvx won't accept such a large
+            % matrix
+            for u_idx = 1:m
+                J = J + u(u_idx, k)^2 * R(u_idx, u_idx);
             end
         end
         minimize(J)
@@ -349,7 +361,7 @@ stairs(100.*x(2,:)/mg2.cap)
 hold on
 stairs(100.*x(3,:)/mg3.cap, 'Color',[0.4,0.7,0.3])
 title("Battery Percent Charged, No Observer or OTS")
-ylim([20 80])
+ylim([20 70])
 ylabel("Battery Percent Charged (%)")
 fontsize(14,"points")
 grid on
@@ -363,7 +375,7 @@ stairs(100.*x_ots(2,:)/mg2.cap)
 hold on
 stairs(100.*x_ots(3,:)/mg3.cap, 'Color',[0.4,0.7,0.3])
 title("Battery Percent Charged, Observer and OTS")
-ylim([20 80])
+ylim([20 70])
 ylabel("Battery Percent Charged (%)")
 fontsize(14,"points")
 grid on
@@ -377,33 +389,33 @@ stairs(xhat_aug_ots(5,:))
 hold on
 stairs(xhat_aug_ots(6,:))
 hold on
-plot(d(1).*ones(1, num_time_steps), "Color", [0.5, 0.5, 0.5])
+plot(d(1,:), "Color", [0.5, 0.5, 0.5])
 legend(["MG1 dhat", "MG2 dhat", "MG3 dhat", "True disturbance value"])
 title("Disturbance Estimate")
 ylabel("Disturbance Estimate (kWh)")
 xlabel("Time step (hour)")
-ylim([0,50])
+ylim([-25,25])
 fontsize(16,"points")
 
+%% Initialization functions
 
-%% Functions
-
-% State function
-function next_x = state_function(x, u, wt, pv, D, mgs)
-    n = length(x);
-    mg_offset = 0;
-    for mg_idx = 1:n
-        mg = mgs(mg_idx);
-        energy_sold = sum(u(mg.grid_sell_idx + mg_offset : mg.mg_sell_idx_end + mg_offset));
-        energy_bought = sum(u(mg.grid_buy_idx + mg_offset : mg.mg_buy_idx_end + mg_offset));
-        next_x(mg_idx) = x(mg_idx) + energy_bought - energy_sold + wt(mg_idx) + pv(mg_idx) - D(mg_idx);
-        mg_offset = mg_offset + mgs(mg_idx).num_mg_inputs;
-    end
-    reshape(next_x, [n,1]);
+% Compiles the MPC config parameters into a struct
+function mpc_config = get_mpc_config(n, m, N, dt, A, B, C, Q, R, P)
+    mpc_config.n = n;
+    mpc_config.m = m;
+    mpc_config.N = N;
+    mpc_config.dt = dt;
+    mpc_config.A = A;
+    mpc_config.B = B;
+    mpc_config.C = C;
+    mpc_config.Q = Q;
+    mpc_config.R = R;
+    mpc_config.P = P;
 end
 
 % Create a microgrid struct with the given parameters
-function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, vr, vf, Spv, Pf, eff, cap, rte)
+function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, vr, vf, Spv, Pf, eff, cap, rte, ...
+    max_grid_buy, max_grid_sell, max_mg_buy, max_mg_sell, max_charge, min_charge, state_weight, buy_weight, sell_weight)
     
     % Connections
     mg.num_connections = sum(adj_matrix(index,:));
@@ -423,19 +435,17 @@ function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, v
     mg.rte = rte;             % Round trip efficiency
 
     % Constraints
-    % Need to find sources for these values
     mg.max = 0.8*cap;
     mg.min = 0.2*cap;
     mg.ref = 0.6*cap;
-    mg.max_grid_buy = 500;
-    mg.max_grid_sell = 500;
-    mg.max_mg_buy = 500;
-    mg.max_mg_sell = 500;
-    mg.max_charge = 1000; % Tesla megapack
-    mg.min_charge = -1000;
+    mg.max_grid_buy = max_grid_buy;
+    mg.max_grid_sell = max_grid_sell;
+    mg.max_mg_buy = max_mg_buy;
+    mg.max_mg_sell = max_mg_sell;
+    mg.max_charge = max_charge; 
+    mg.min_charge = min_charge;
     mg.max_power_bal = mg.num_connections * mg.max_mg_sell + mg.max_grid_sell + mg.max_charge;
     mg.min_power_bal = -(mg.num_connections * mg.max_mg_buy + mg.max_grid_buy) + mg.min_charge;
-
     mg.u_max = [mg.max_charge; mg.max_grid_sell; mg.max_mg_sell; mg.max_mg_sell; mg.max_grid_buy; mg.max_mg_buy; mg.max_mg_buy];
     mg.u_min = [mg.min_charge; 0; 0; 0; 0; 0; 0];
 
@@ -450,25 +460,81 @@ function mg = define_microgrid(index, adj_matrix, latitude, longitude, Pr, vc, v
     mg.num_mg_inputs = mg.mg_buy_idx_end;
 
     % Cost function parameters
-    mg.state_weight = 16;
-    mg.grid_buy_weight = 2;
-    mg.grid_sell_weight = 1;
+    mg.state_weight = state_weight;
+    mg.grid_buy_weight = buy_weight;
+    mg.grid_sell_weight = sell_weight;
 
 end
 
-function mpc_config = get_mpc_config(n, m, N, dt, A, B, C, Q, R, P)
-    mpc_config.n = n;
-    mpc_config.m = m;
-    mpc_config.N = N;
-    mpc_config.dt = dt;
-    mpc_config.A = A;
-    mpc_config.B = B;
-    mpc_config.C = C;
-    mpc_config.Q = Q;
-    mpc_config.R = R;
-    mpc_config.P = P;
+% Gets the system matrices 
+function [A,B,C,Q,R] = get_system_matrices(n, m, mgs)
+    A = eye(n);
+    B = zeros(n,m);
+    Q = zeros(n,n);
+    R = zeros(m,m);
+    C = eye(n);
+    mg_offset = 0;
+
+    for i = 1:n
+        B(i, mgs(i).charge_idx + mg_offset) = mgs(i).rte;
+        Q(i,i) = mgs(i).state_weight;
+        R(mg_offset + mgs(i).grid_sell_idx, mg_offset + mgs(i).grid_sell_idx) = mgs(i).grid_sell_weight;
+        R(mg_offset + mgs(i).grid_buy_idx, mg_offset + mgs(i).grid_buy_idx) = mgs(i).grid_buy_weight;
+        mg_offset = mg_offset + mgs(i).num_mg_inputs;
+    end
+    % PSD for solvers
+    R = R + 1e-6*eye(m,m);
+
 end
 
+%% Observer and OTS functions
+
+% Calculates the optimal targets xref and uref, and the offset to the power
+% balance, power_bal_ref
+function [xref, uref, power_bal_ref] = ots(mgs, mpc_config, yref, dhat)
+    n = mpc_config.n;
+    m = mpc_config.m;
+    R = mpc_config.R;
+    xref = yref;
+    uref = zeros(m,1);
+    mg_offset = 0;
+    for i = 1:n
+        mg = mgs(i);
+        uref(mg_offset + mg.charge_idx) = -dhat(i)/mg.rte;
+        power_bal_ref = mg.rte*uref(mg_offset + mg.charge_idx);
+        mg_offset = mg_offset + mg.num_mg_inputs;
+    end
+end
+
+% Gets a constant disturbance 
+function disturbance = get_const_disturbance(val, num_hours)
+    t = ones(1, num_hours);
+    disturbance = t.*val;
+end
+
+function disturbance = get_ramp_disturbance(start, stop, num_hours)
+    t = ones(1, num_hours);
+    disturbance = linspace(start, stop, num_hours);
+end
+
+% Initialize Luenberger observers for all MGs
+function [A_aug, B_aug, C_aug, L] = init_observer(A, B, C, Bd, Cd, poles) 
+    n = size(A, 1);
+    m = size(B, 2);
+    A_aug = [A, Bd; zeros(n,n), C];
+    B_aug = [B; zeros(n,m)];
+    C_aug = [C, Cd];
+    L = place(A_aug', C_aug', poles)';
+end
+
+% Estimates the state using the Luenberger observer 
+function xhat_new = estimate(y, xhat, u, A_aug, B_aug, C_aug, L)
+    xhat_new = A_aug * xhat + B_aug * u + L * (y - C_aug * xhat);
+end
+
+%% Power generation and demand modeling functions
+
+% Loads the beta solar parameters and weibull wind parameters
 function [beta_params, weibull_params] = load_params(latitudes, longitudes)
     beta_params = containers.Map(); 
     weibull_params = containers.Map(); 
@@ -481,22 +547,26 @@ function [beta_params, weibull_params] = load_params(latitudes, longitudes)
 
 end
 
+% Gets the weibull parameters for a given month and hour
 function params = get_weibull_params(weibull_params, latitude, longitude, month, hour)
     coordinates = mat2str([latitude, longitude]); 
     data = weibull_params(coordinates);
     params = [data.weibull_params_a{month, hour}, data.weibull_params_b{month, hour}];
 end
 
+% Gets the beta parameters for a given month and hour
 function params = get_beta_params(beta_params, latitude, longitude, month, hour)
     coordinates = mat2str([latitude, longitude]); 
     data = beta_params(coordinates);
     params = [data.beta_params_a{month, hour}, data.beta_params_b{month, hour}, data.beta_params_scaling{month, hour}];
 end
 
+% Loads the power demand for a given year
 function demand = load_demand(selected_year)
     demand = load(sprintf("energy_demand_%d.mat", selected_year));
 end
 
+% Gets the demand data for a given month, dat, hour, and customer for num_hours
 function demand_data = get_demand_data(demand_table, month, day, hour, num_hours, param_name)
     demand_data = [];
     % Find the row index that matches the given year, month, day, and hour
@@ -510,6 +580,8 @@ function demand_data = get_demand_data(demand_table, month, day, hour, num_hours
     demand_data = table2array(demand_table(idx:end_idx, param_name))'; % Return the subset of data
 end
 
+% Uses the weibull and beta parameters to calculate the probabilistic power
+% generation
 function [wt, pv] = get_energy_data(mgs, month, start_hour, num_hours)
     
     wt = zeros(length(mgs), num_hours);
@@ -549,28 +621,4 @@ function [wt, pv] = get_energy_data(mgs, month, start_hour, num_hours)
         
         end
     end
-end
-
-function disturbance = get_sine_disturbance(amp, freq, phase, num_hours)
-    t = 0:num_hours-1;
-    disturbance = amp * sin(freq * t + phase);
-end
-
-function disturbance = get_const_disturbance(val, num_hours)
-    t = ones(1, num_hours);
-    disturbance = t.*val;
-end
-
-% Initialize Luenberger observers for all MGs
-function [A_aug, B_aug, C_aug, L] = init_observer(A, B, C, Bd, Cd, poles) 
-    n = size(A, 1);
-    m = size(B, 2);
-    A_aug = [A, Bd; zeros(n,n), C];
-    B_aug = [B; zeros(n,m)];
-    C_aug = [C, Cd];
-    L = place(A_aug', C_aug', poles)';
-end
-
-function xhat_new = estimate(y, xhat, u, A_aug, B_aug, C_aug, L)
-    xhat_new = A_aug * xhat + B_aug * u + L * (y - C_aug * xhat);
 end
